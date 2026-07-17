@@ -321,7 +321,14 @@ public class ControllerShiHeatPumpImpl extends AbstractOpenemsComponent
 		// configured support duration
 		var creditableSparePower = Math.min(sparePower,
 				Math.round(spareEssEnergy * 60F / Math.max(1, commitMinutes)));
-		var quarters = Math.max(1, (commitMinutes + 14) / 15);
+		// The commit starts mid-quarter: it covers the remainder of the current
+		// quarter plus the overhang into subsequent quarters (e.g. a 20-minute
+		// commit at 12:14 reaches until 12:34 and touches three quarters)
+		var now = ZonedDateTime.now(this.componentManager.getClock());
+		var remainingSecondsCurrentQuarter = 15 * 60
+				- (now.get(ChronoField.MINUTE_OF_HOUR) % 15 * 60 + now.getSecond());
+		var overhangSeconds = Math.max(0, commitMinutes * 60 - remainingSecondsCurrentQuarter);
+		var quarters = 1 + (overhangSeconds + 15 * 60 - 1) / (15 * 60);
 		for (var i = 0; i < Math.min(quarters, Math.min(productions.length, consumptions.length)); i++) {
 			var production = productions[i];
 			var consumption = consumptions[i];

@@ -342,6 +342,56 @@ class ControllerShiHeatPumpImplTest {
 	}
 
 	@Test
+	void testForecastVetoCoversPartialCurrentQuarter() throws Exception {
+		var clock = createDummyClock();
+		var componentManager = new DummyComponentManager(clock);
+		var sum = new DummySum();
+		var now = Instant.now(clock);
+
+		// Surplus predicted for the next two quarters, none afterwards
+		var productionValues = new Integer[24];
+		var consumptionValues = new Integer[24];
+		Arrays.fill(productionValues, 0);
+		productionValues[0] = 5000;
+		productionValues[1] = 5000;
+		Arrays.fill(consumptionValues, 500);
+		var predictorManager = new DummyPredictorManager(//
+				new DummyPredictor("predictor0", componentManager,
+						Prediction.from(sum, SUM_PRODUCTION_ACTIVE_POWER, now, productionValues),
+						SUM_PRODUCTION_ACTIVE_POWER),
+				new DummyPredictor("predictor1", componentManager,
+						Prediction.from(sum, SUM_CONSUMPTION_ACTIVE_POWER, now, consumptionValues),
+						SUM_CONSUMPTION_ACTIVE_POWER));
+
+		new ControllerTest(new ControllerShiHeatPumpImpl()) //
+				.addReference("cm", new DummyConfigurationAdmin()) //
+				.addReference("componentManager", componentManager) //
+				.addReference("sum", sum) //
+				.addReference("predictorManager", predictorManager) //
+				.addReference("heatPump", new DummyHeatShiHeatPump("heatPump0")) //
+				.addComponent(new DummyManagedSymmetricEss("ess0") //
+						.setPower(new DummyPower(10_000))) //
+				.activate(MyConfig.create() //
+						.setId("ctrl0") //
+						.setHeatPumpId("heatPump0") //
+						.setEssId("ess0") //
+						.setHeatPumpPosition(HeatPumpPosition.GRID_SIDE_OF_GRID_METER) //
+						.setForecastVetoEnabled(true) //
+						.build()) //
+				// 14 minutes into the quarter, a 20-minute commit reaches into the
+				// third quarter, which shows no surplus -> veto
+				.next(new TestCase("Commit overhang reaches surplus-free third quarter: veto") //
+						.timeleap(clock, 14, ChronoUnit.MINUTES) //
+						.input("heatPump0", HeatShiHeatPump.ChannelId.MIN_RUNTIME, 20) //
+						.input("_sum", Sum.ChannelId.GRID_ACTIVE_POWER, -4000) //
+						.input("_sum", Sum.ChannelId.ESS_DISCHARGE_POWER, 0) //
+						.input("heatPump0", ElectricityMeter.ChannelId.ACTIVE_POWER, 500) //
+						.output(ControllerShiHeatPump.ChannelId.ELEVATED_MODE_ACTIVE, false) //
+						.output(ControllerShiHeatPump.ChannelId.BOOST_FORECAST_VETO, true)) //
+				.deactivate();
+	}
+
+	@Test
 	void testForecastVetoLimitsCreditedBatteryEnergy() throws Exception {
 		var clock = createDummyClock();
 		var componentManager = new DummyComponentManager(clock);
