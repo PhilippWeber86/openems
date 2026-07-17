@@ -46,6 +46,10 @@ public class ControllerShiHeatPumpImpl extends AbstractOpenemsComponent
 			Sum.ChannelId.PRODUCTION_ACTIVE_POWER.id());
 	private static final ChannelAddress SUM_CONSUMPTION_ACTIVE_POWER = new ChannelAddress("_sum",
 			Sum.ChannelId.CONSUMPTION_ACTIVE_POWER.id());
+	private static final ChannelAddress SUM_UNMANAGED_PRODUCTION_ACTIVE_POWER = new ChannelAddress("_sum",
+			Sum.ChannelId.UNMANAGED_PRODUCTION_ACTIVE_POWER.id());
+	private static final ChannelAddress SUM_UNMANAGED_CONSUMPTION_ACTIVE_POWER = new ChannelAddress("_sum",
+			Sum.ChannelId.UNMANAGED_CONSUMPTION_ACTIVE_POWER.id());
 
 	/** Upper bound of SHI register HR10041 (300 x 0.1 kW). */
 	private static final int MAX_PC_LIMIT = 30_000; // [W]
@@ -301,8 +305,8 @@ public class ControllerShiHeatPumpImpl extends AbstractOpenemsComponent
 		if (!this.config.forecastVetoEnabled() || this.predictorManager == null) {
 			return false;
 		}
-		var productionPrediction = this.predictorManager.getPrediction(SUM_PRODUCTION_ACTIVE_POWER);
-		var consumptionPrediction = this.predictorManager.getPrediction(SUM_CONSUMPTION_ACTIVE_POWER);
+		var productionPrediction = this.getProductionPrediction();
+		var consumptionPrediction = this.getConsumptionPrediction();
 		if (productionPrediction.isEmpty() || consumptionPrediction.isEmpty()) {
 			return false;
 		}
@@ -460,8 +464,8 @@ public class ControllerShiHeatPumpImpl extends AbstractOpenemsComponent
 			this._setNoPredictionAvailable(true);
 			return 0;
 		}
-		var productionPrediction = this.predictorManager.getPrediction(SUM_PRODUCTION_ACTIVE_POWER);
-		var consumptionPrediction = this.predictorManager.getPrediction(SUM_CONSUMPTION_ACTIVE_POWER);
+		var productionPrediction = this.getProductionPrediction();
+		var consumptionPrediction = this.getConsumptionPrediction();
 		if (productionPrediction.isEmpty() || consumptionPrediction.isEmpty()) {
 			this._setNoPredictionAvailable(true);
 			return 0;
@@ -478,6 +482,36 @@ public class ControllerShiHeatPumpImpl extends AbstractOpenemsComponent
 				heatPumpPrediction) * this.config.nightReserveBuffer() / 100F);
 		this._setNightReserveEnergy(reserveEnergy);
 		return Math.max(0, usableEnergy - reserveEnergy);
+	}
+
+	/**
+	 * Gets the production prediction. Prefers the 'Unmanaged' channel (served
+	 * e.g. by the weather-based Predictor.Production.LinearModel) and falls back
+	 * to the plain channel (served e.g. by the Persistence-Model defaults).
+	 *
+	 * @return the {@link Prediction}; may be empty
+	 */
+	private Prediction getProductionPrediction() {
+		var prediction = this.predictorManager.getPrediction(SUM_UNMANAGED_PRODUCTION_ACTIVE_POWER);
+		if (prediction.isEmpty()) {
+			prediction = this.predictorManager.getPrediction(SUM_PRODUCTION_ACTIVE_POWER);
+		}
+		return prediction;
+	}
+
+	/**
+	 * Gets the consumption prediction. Prefers the 'Unmanaged' channel (managed
+	 * consumers like EVCS are planned by the EMS and do not belong into the
+	 * household night reserve) and falls back to the plain channel.
+	 *
+	 * @return the {@link Prediction}; may be empty
+	 */
+	private Prediction getConsumptionPrediction() {
+		var prediction = this.predictorManager.getPrediction(SUM_UNMANAGED_CONSUMPTION_ACTIVE_POWER);
+		if (prediction.isEmpty()) {
+			prediction = this.predictorManager.getPrediction(SUM_CONSUMPTION_ACTIVE_POWER);
+		}
+		return prediction;
 	}
 
 	/**

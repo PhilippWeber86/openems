@@ -32,6 +32,10 @@ class ControllerShiHeatPumpImplTest {
 			"ProductionActivePower");
 	private static final ChannelAddress SUM_CONSUMPTION_ACTIVE_POWER = new ChannelAddress("_sum",
 			"ConsumptionActivePower");
+	private static final ChannelAddress SUM_UNMANAGED_PRODUCTION_ACTIVE_POWER = new ChannelAddress("_sum",
+			"UnmanagedProductionActivePower");
+	private static final ChannelAddress SUM_UNMANAGED_CONSUMPTION_ACTIVE_POWER = new ChannelAddress("_sum",
+			"UnmanagedConsumptionActivePower");
 
 	@Test
 	void testElevatedModeOnGridExportWithHysteresis() throws Exception {
@@ -284,6 +288,56 @@ class ControllerShiHeatPumpImplTest {
 						.output("heatPump0", HeatShiHeatPump.ChannelId.HOT_WATER_MODE, 0) //
 						.output("heatPump0", HeatShiHeatPump.ChannelId.LPC_MODE, 0) //
 						.output(ControllerShiHeatPump.ChannelId.RUN_EXTENSION_ACTIVE, false)) //
+				.deactivate();
+	}
+
+	@Test
+	void testPredictionsFromUnmanagedChannels() throws Exception {
+		var clock = createDummyClock();
+		var componentManager = new DummyComponentManager(clock);
+		var sum = new DummySum();
+		var now = Instant.now(clock);
+
+		// Predictors serve only the 'Unmanaged' channels, like the weather-based
+		// Predictor.Production.LinearModel does
+		var productionValues = new Integer[24];
+		var consumptionValues = new Integer[24];
+		Arrays.fill(productionValues, 0);
+		Arrays.fill(consumptionValues, 500);
+		var predictorManager = new DummyPredictorManager(//
+				new DummyPredictor("predictor0", componentManager,
+						Prediction.from(sum, SUM_UNMANAGED_PRODUCTION_ACTIVE_POWER, now, productionValues),
+						SUM_UNMANAGED_PRODUCTION_ACTIVE_POWER),
+				new DummyPredictor("predictor1", componentManager,
+						Prediction.from(sum, SUM_UNMANAGED_CONSUMPTION_ACTIVE_POWER, now, consumptionValues),
+						SUM_UNMANAGED_CONSUMPTION_ACTIVE_POWER));
+
+		new ControllerTest(new ControllerShiHeatPumpImpl()) //
+				.addReference("cm", new DummyConfigurationAdmin()) //
+				.addReference("componentManager", componentManager) //
+				.addReference("sum", sum) //
+				.addReference("predictorManager", predictorManager) //
+				.addReference("heatPump", new DummyHeatShiHeatPump("heatPump0")) //
+				.addComponent(new DummyManagedSymmetricEss("ess0") //
+						.setPower(new DummyPower(10_000))) //
+				.activate(MyConfig.create() //
+						.setId("ctrl0") //
+						.setHeatPumpId("heatPump0") //
+						.setEssId("ess0") //
+						.setHeatPumpPosition(HeatPumpPosition.GRID_SIDE_OF_GRID_METER) //
+						.setMinSoc(15) //
+						.setNightReserveBuffer(100) //
+						.setEssSupportDurationMinutes(60) //
+						.build()) //
+				.next(new TestCase("Night reserve calculated from Unmanaged predictions") //
+						.input("_sum", Sum.ChannelId.GRID_ACTIVE_POWER, 0) //
+						.input("_sum", Sum.ChannelId.ESS_DISCHARGE_POWER, 0) //
+						.input("_sum", Sum.ChannelId.ESS_SOC, 65) //
+						.input("_sum", Sum.ChannelId.ESS_CAPACITY, 10_000) //
+						.input("heatPump0", ElectricityMeter.ChannelId.ACTIVE_POWER, 500) //
+						.output(ControllerShiHeatPump.ChannelId.ESS_SUPPORT_POWER, 2000) //
+						.output(ControllerShiHeatPump.ChannelId.NIGHT_RESERVE_ENERGY, 3000) //
+						.output(ControllerShiHeatPump.ChannelId.NO_PREDICTION_AVAILABLE, false)) //
 				.deactivate();
 	}
 
