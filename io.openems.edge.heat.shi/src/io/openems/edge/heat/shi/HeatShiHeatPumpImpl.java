@@ -91,6 +91,7 @@ public class HeatShiHeatPumpImpl extends AbstractOpenemsModbusComponent
 				"Modbus", config.modbus_id())) {
 			return;
 		}
+		this._setReadOnlyMode(config.readOnly());
 	}
 
 	@Modified
@@ -100,6 +101,7 @@ public class HeatShiHeatPumpImpl extends AbstractOpenemsModbusComponent
 				"Modbus", config.modbus_id())) {
 			return;
 		}
+		this._setReadOnlyMode(config.readOnly());
 	}
 
 	@Override

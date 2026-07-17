@@ -500,6 +500,31 @@ class ControllerShiHeatPumpImplTest {
 	}
 
 	@Test
+	void testControlNotAllowedWarningOnReadOnlyDevice() throws Exception {
+		var clock = createDummyClock();
+		new ControllerTest(new ControllerShiHeatPumpImpl()) //
+				.addReference("cm", new DummyConfigurationAdmin()) //
+				.addReference("componentManager", new DummyComponentManager(clock)) //
+				.addReference("sum", new DummySum()) //
+				.addReference("heatPump", new DummyHeatShiHeatPump("heatPump0")) //
+				.addComponent(new DummyManagedSymmetricEss("ess0") //
+						.setPower(new DummyPower(10_000))) //
+				.activate(MyConfig.create() //
+						.setId("ctrl0") //
+						.setHeatPumpId("heatPump0") //
+						.setEssId("ess0") //
+						.setHeatPumpPosition(HeatPumpPosition.GRID_SIDE_OF_GRID_METER) //
+						.build()) //
+				.next(new TestCase("Device in read-only mode: warning raised") //
+						.input("heatPump0", HeatShiHeatPump.ChannelId.READ_ONLY_MODE, true) //
+						.output(ControllerShiHeatPump.ChannelId.CONTROL_NOT_ALLOWED, true)) //
+				.next(new TestCase("Device writable: warning cleared") //
+						.input("heatPump0", HeatShiHeatPump.ChannelId.READ_ONLY_MODE, false) //
+						.output(ControllerShiHeatPump.ChannelId.CONTROL_NOT_ALLOWED, false)) //
+				.deactivate();
+	}
+
+	@Test
 	void testMeterTypeMismatchWarning() throws Exception {
 		var clock = createDummyClock();
 		new ControllerTest(new ControllerShiHeatPumpImpl()) //

@@ -106,6 +106,9 @@ public class ControllerShiHeatPumpImpl extends AbstractOpenemsComponent
 	@Override
 	public void run() throws OpenemsNamedException {
 		this.checkHeatPumpMeterType();
+		// Surface silently ignored writes: with the device in read-only mode all
+		// setpoint commands of this Controller have no effect
+		this._setControlNotAllowed(this.heatPump.getReadOnlyMode().orElse(false));
 
 		var gridActivePower = this.sum.getGridActivePower().orElse(0);
 		var essDischargePower = Math.max(0, this.sum.getEssDischargePower().orElse(0));

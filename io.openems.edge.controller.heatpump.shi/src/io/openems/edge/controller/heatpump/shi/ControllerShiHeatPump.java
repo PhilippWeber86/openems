@@ -40,6 +40,8 @@ public interface ControllerShiHeatPump extends OpenemsComponent {
 				.text("Battery energy reserved for the household until the next forecasted PV surplus")), //
 		NO_PREDICTION_AVAILABLE(Doc.of(Level.WARNING) //
 				.text("No valid production/consumption prediction is available.")), //
+		CONTROL_NOT_ALLOWED(Doc.of(Level.WARNING) //
+				.text("The heat pump device is in read-only mode - the Controller cannot write any setpoints.")), //
 		METER_TYPE_MISMATCH(Doc.of(Level.WARNING) //
 				.text("Heat pump Meter-Type does not match the configured heat pump position: "
 						+ "BEHIND_GRID_METER expects CONSUMPTION_METERED, "
@@ -217,6 +219,24 @@ public interface ControllerShiHeatPump extends OpenemsComponent {
 	 */
 	public default void _setNightReserveEnergy(Integer value) {
 		this.getNightReserveEnergyChannel().setNextValue(value);
+	}
+
+	public default StateChannel getControlNotAllowedChannel() {
+		return this.channel(ChannelId.CONTROL_NOT_ALLOWED);
+	}
+
+	public default Value<Boolean> getControlNotAllowed() {
+		return this.getControlNotAllowedChannel().value();
+	}
+
+	/**
+	 * Internal method to set the 'nextValue' on
+	 * {@link ChannelId#CONTROL_NOT_ALLOWED} Channel.
+	 *
+	 * @param value the next value
+	 */
+	public default void _setControlNotAllowed(boolean value) {
+		this.getControlNotAllowedChannel().setNextValue(value);
 	}
 
 	public default StateChannel getMeterTypeMismatchChannel() {

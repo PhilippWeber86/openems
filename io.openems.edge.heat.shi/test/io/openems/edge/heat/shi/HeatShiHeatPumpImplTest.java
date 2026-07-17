@@ -56,6 +56,7 @@ class HeatShiHeatPumpImplTest {
 						.build());
 
 		assertEquals(MeterType.CONSUMPTION_NOT_METERED, sut.getMeterType());
+		assertEquals(true, sut.getReadOnlyModeChannel().getNextValue().orElse(false));
 	}
 
 	@Test

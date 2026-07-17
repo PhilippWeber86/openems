@@ -68,6 +68,9 @@ public interface HeatShiHeatPump extends ElectricityMeter, OpenemsComponent {
 				.persistencePriority(PersistencePriority.HIGH) //
 				.text("Currently active hot-water setpoint of the heat pump; reflects the natural "
 						+ "setpoint only while no external influence is active")), //
+		READ_ONLY_MODE(Doc.of(OpenemsType.BOOLEAN) //
+				.persistencePriority(PersistencePriority.HIGH) //
+				.text("Read-only mode is active; no setpoints are written to the heat pump")), //
 		MIN_STANDSTILL_TIME(Doc.of(OpenemsType.INTEGER) //
 				.unit(Unit.MINUTE) //
 				.text("Minimum standstill time until the compressor may start again (restart lock)")), //
@@ -162,6 +165,24 @@ public interface HeatShiHeatPump extends ElectricityMeter, OpenemsComponent {
 
 	public default Value<Integer> getHeatingStatus() {
 		return this.getHeatingStatusChannel().value();
+	}
+
+	public default io.openems.edge.common.channel.BooleanReadChannel getReadOnlyModeChannel() {
+		return this.channel(ChannelId.READ_ONLY_MODE);
+	}
+
+	public default Value<Boolean> getReadOnlyMode() {
+		return this.getReadOnlyModeChannel().value();
+	}
+
+	/**
+	 * Internal method to set the 'nextValue' on {@link ChannelId#READ_ONLY_MODE}
+	 * Channel.
+	 *
+	 * @param value the next value
+	 */
+	public default void _setReadOnlyMode(boolean value) {
+		this.getReadOnlyModeChannel().setNextValue(value);
 	}
 
 	public default IntegerReadChannel getHotWaterTemperatureChannel() {
