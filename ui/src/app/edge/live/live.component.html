@@ -167,6 +167,10 @@
                       <oe-controller-heat [componentId]="widget.componentId"></oe-controller-heat>
                     </ion-col>
 
+                    <ion-col *ngSwitchCase="'Controller.HeatPump.Shi'" size="12" [attr.size-lg]="widgetColumnSize" class="ion-no-padding">
+                      <oe-controller-heatpump-shi [componentId]="widget.componentId"></oe-controller-heatpump-shi>
+                    </ion-col>
+
                     <ion-col *ngSwitchCase="'Controller.Io.HeatPump.SgReady'" size="12" [attr.size-lg]="widgetColumnSize" class="ion-no-padding">
                       <oe-controller-io-heatpump [componentId]="widget.componentId"></oe-controller-io-heatpump>
                     </ion-col>

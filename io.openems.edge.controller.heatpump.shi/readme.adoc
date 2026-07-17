@@ -1,0 +1,40 @@
+= Controller SHI Heat Pump
+
+Runs a Novelan / Alpha Innotec (SHI) heat pump preferably on PV surplus and protects the battery for the household.
+
+== Overview
+
+This Controller is designed for setups where the heat pump has its own, cheaper electricity tariff: PV and battery should serve the household first (household electricity is more expensive), and the heat pump may only be supplied by them when the forecast guarantees that the household stays covered.
+
+The Controller supports both wiring topologies via the `Heat pump position` configuration. The Meter-Type of the heat pump device must be configured to match (`BEHIND_GRID_METER` -> `CONSUMPTION_METERED`, `GRID_SIDE_OF_GRID_METER` -> `CONSUMPTION_NOT_METERED`); the Controller raises the `MeterTypeMismatch` warning otherwise.
+
+* **`BEHIND_GRID_METER`** (default, standard installation — grid meter at the grid connection point): The heat pump is part of the grid measurement, so the Balancing Controller would serve it from the battery by default. This Controller therefore *limits* ESS discharge (`SetActivePowerLessOrEquals`) to the household demand plus the allowed support power. The surplus calculation adds the current heat-pump power back, so the heat pump does not eat its own surplus signal. If the `PredictorManager` provides a prediction for the heat-pump channel (add e.g. `heatPump0/ActivePower` to the predictor's channel addresses), it is subtracted from the consumption prediction for the night reserve; otherwise the reserve stays conservative.
+* **`GRID_SIDE_OF_GRID_METER`**: The heat pump is connected upstream of the grid meter; its consumption is invisible at the balancing point and the battery never serves it by default (fail-safe by wiring). PV surplus leaving the segment (grid export) physically flows through the heat-pump branch. While support is allowed, the Controller *forces* battery export (`SetActivePowerGreaterOrEquals`) towards the heat pump, capped at its current consumption.
+
+In both topologies the same strategy applies:
+
+* **Elevated mode**: When there is real PV surplus and it — together with the allowed battery bridge — reaches the configured minimum power, the Controller raises the heat-pump setpoints (heating and hot-water setpoint mode, HR10000=1/HR10001 and HR10005=1/HR10006) and sets a soft power limit (HR10040=1/HR10041) to the available power, so the heat pump stores the surplus as heat.
+* **Night reserve**: The battery may only support the heat pump with energy above the forecasted household deficit until the next sustained PV surplus (calculated from the `PredictorManager` production/consumption predictions, scaled by a configurable buffer) plus a minimum SoC.
+* **Passive battery support**: Regular heat-pump runs (e.g. hot water in the evening) are also covered by the battery — without raising setpoints — as long as spare energy above the night reserve is available. The support is always capped at the current heat-pump consumption, so battery energy is neither taken from the household reserve nor sold to the grid.
+
+== Scheduler
+
+This Controller must be scheduled *before* the Balancing Controller (`Controller.Symmetric.Balancing`), otherwise the forced-export constraint has no effect.
+
+== Notes
+
+* Without a valid prediction the Controller falls back to pure-surplus operation and raises the `NoPredictionAvailable` warning; the battery then never supports the heat pump.
+* Because the heat pump is outside the balancing area, `_sum/ConsumptionActivePower` (and its prediction) covers the household only — exactly what the night reserve needs.
+* Channels `ElevatedModeActive`, `EssSupportPower`, `EssForcedExportPower` and `NightReserveEnergy` document each decision for debugging and history.
+
+== Components
+
+=== Controller SHI Heat Pump
+
+*Name*: Controller SHI Heat Pump
+
+*Factory-PID*: `Controller.HeatPump.Shi`
+
+== Code
+
+https://github.com/OpenEMS/openems/tree/develop/io.openems.edge.controller.heatpump.shi[Source Code icon:github[]]
