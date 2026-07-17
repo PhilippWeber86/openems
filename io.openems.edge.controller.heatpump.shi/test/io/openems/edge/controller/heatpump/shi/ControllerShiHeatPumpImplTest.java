@@ -272,6 +272,9 @@ class ControllerShiHeatPumpImplTest {
 						.output("heatPump0", HeatShiHeatPump.ChannelId.HOT_WATER_MODE, 1) //
 						.output("heatPump0", HeatShiHeatPump.ChannelId.HOT_WATER_SETPOINT, 550) //
 						.output("heatPump0", HeatShiHeatPump.ChannelId.HEATING_MODE, 0) //
+						// Soft-limit at covered power (surplus 800 + spare 2000)
+						.output("heatPump0", HeatShiHeatPump.ChannelId.LPC_MODE, 1) //
+						.output("heatPump0", HeatShiHeatPump.ChannelId.PC_LIMIT, 2800) //
 						.output(ControllerShiHeatPump.ChannelId.ELEVATED_MODE_ACTIVE, false) //
 						.output(ControllerShiHeatPump.ChannelId.RUN_EXTENSION_ACTIVE, true) //
 						.output(ControllerShiHeatPump.ChannelId.NATURAL_HOT_WATER_SETPOINT, 480)) //
@@ -279,7 +282,60 @@ class ControllerShiHeatPumpImplTest {
 				.next(new TestCase("Run finished: extension ends") //
 						.input("heatPump0", HeatShiHeatPump.ChannelId.HOT_WATER_STATUS, 1) //
 						.output("heatPump0", HeatShiHeatPump.ChannelId.HOT_WATER_MODE, 0) //
+						.output("heatPump0", HeatShiHeatPump.ChannelId.LPC_MODE, 0) //
 						.output(ControllerShiHeatPump.ChannelId.RUN_EXTENSION_ACTIVE, false)) //
+				.deactivate();
+	}
+
+	@Test
+	void testForecastVetoLimitsCreditedBatteryEnergy() throws Exception {
+		var clock = createDummyClock();
+		var componentManager = new DummyComponentManager(clock);
+		var sum = new DummySum();
+		var now = Instant.now(clock);
+
+		var productionValues = new Integer[24];
+		var consumptionValues = new Integer[24];
+		Arrays.fill(productionValues, 0);
+		Arrays.fill(consumptionValues, 500);
+		var predictorManager = new DummyPredictorManager(//
+				new DummyPredictor("predictor0", componentManager,
+						Prediction.from(sum, SUM_PRODUCTION_ACTIVE_POWER, now, productionValues),
+						SUM_PRODUCTION_ACTIVE_POWER),
+				new DummyPredictor("predictor1", componentManager,
+						Prediction.from(sum, SUM_CONSUMPTION_ACTIVE_POWER, now, consumptionValues),
+						SUM_CONSUMPTION_ACTIVE_POWER));
+
+		new ControllerTest(new ControllerShiHeatPumpImpl()) //
+				.addReference("cm", new DummyConfigurationAdmin()) //
+				.addReference("componentManager", componentManager) //
+				.addReference("sum", sum) //
+				.addReference("predictorManager", predictorManager) //
+				.addReference("heatPump", new DummyHeatShiHeatPump("heatPump0")) //
+				.addComponent(new DummyManagedSymmetricEss("ess0") //
+						.setPower(new DummyPower(10_000))) //
+				.activate(MyConfig.create() //
+						.setId("ctrl0") //
+						.setHeatPumpId("heatPump0") //
+						.setEssId("ess0") //
+						.setHeatPumpPosition(HeatPumpPosition.GRID_SIDE_OF_GRID_METER) //
+						.setForecastVetoEnabled(true) //
+						// Commit (60 min) outlasts the support duration (15 min):
+						// spare power is 8000 W, but only 2000 Wh of energy exist -
+						// creditable power over the commit is limited to 2000 W
+						.setMinimumSwitchingTime(3600) //
+						.setEssSupportDurationMinutes(15) //
+						.setMinSoc(15) //
+						.setNightReserveBuffer(100) //
+						.build()) //
+				.next(new TestCase("Credited battery power limited by spare energy: veto") //
+						.input("_sum", Sum.ChannelId.GRID_ACTIVE_POWER, -4000) //
+						.input("_sum", Sum.ChannelId.ESS_DISCHARGE_POWER, 0) //
+						.input("_sum", Sum.ChannelId.ESS_SOC, 65) //
+						.input("_sum", Sum.ChannelId.ESS_CAPACITY, 10_000) //
+						.input("heatPump0", ElectricityMeter.ChannelId.ACTIVE_POWER, 500) //
+						.output(ControllerShiHeatPump.ChannelId.ELEVATED_MODE_ACTIVE, false) //
+						.output(ControllerShiHeatPump.ChannelId.BOOST_FORECAST_VETO, true)) //
 				.deactivate();
 	}
 

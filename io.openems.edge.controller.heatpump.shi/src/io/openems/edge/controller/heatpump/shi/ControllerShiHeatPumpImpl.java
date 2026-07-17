@@ -149,7 +149,7 @@ public class ControllerShiHeatPumpImpl extends AbstractOpenemsComponent
 		var entryConditions = surplusPower > 0 && surplusPower + essSupportPower >= minimumPower;
 		var boostConfirmed = this.updateBoostConfirmation(entryConditions);
 		var forecastVetoed = !this.elevatedModeActive && entryConditions
-				&& this.isForecastVetoed(minimumPower, sparePower);
+				&& this.isForecastVetoed(minimumPower, sparePower, spareEssEnergy);
 		this._setBoostForecastVeto(forecastVetoed);
 
 		var shouldElevate = this.elevatedModeActive //
@@ -235,12 +235,15 @@ public class ControllerShiHeatPumpImpl extends AbstractOpenemsComponent
 		if (this.heatPump.getHeatingStatus().orElse(0) > 0) {
 			this.heatPump.setHeatingMode(HeatShiHeatPump.MODE_NONE);
 		}
-		// The hot-water registers belong to the run extension while it is active
-		if (!this.runExtensionActive && this.heatPump.getHotWaterStatus().orElse(0) > 0) {
-			this.heatPump.setHotWaterMode(HeatShiHeatPump.MODE_NONE);
+		// The hot-water and LPC registers belong to the run extension while it is
+		// active
+		if (!this.runExtensionActive) {
+			if (this.heatPump.getHotWaterStatus().orElse(0) > 0) {
+				this.heatPump.setHotWaterMode(HeatShiHeatPump.MODE_NONE);
+			}
+			this.heatPump.setLpcMode(HeatShiHeatPump.LPC_MODE_NONE);
+			this.heatPump.setPcLimit(0);
 		}
-		this.heatPump.setLpcMode(HeatShiHeatPump.LPC_MODE_NONE);
-		this.heatPump.setPcLimit(0);
 	}
 
 	/**
@@ -289,11 +292,12 @@ public class ControllerShiHeatPumpImpl extends AbstractOpenemsComponent
 	 * compressor cycle. Lenient by design - without a prediction or with missing
 	 * values there is no veto, and it never overrules an active elevated mode.
 	 *
-	 * @param minimumPower effective minimum power for elevated mode in W
-	 * @param sparePower   battery power above the night reserve in W
+	 * @param minimumPower   effective minimum power for elevated mode in W
+	 * @param sparePower     battery power above the night reserve in W
+	 * @param spareEssEnergy battery energy above the night reserve in Wh
 	 * @return true if entry should be vetoed
 	 */
-	private boolean isForecastVetoed(int minimumPower, int sparePower) {
+	private boolean isForecastVetoed(int minimumPower, int sparePower, int spareEssEnergy) {
 		if (!this.config.forecastVetoEnabled() || this.predictorManager == null) {
 			return false;
 		}
@@ -307,6 +311,12 @@ public class ControllerShiHeatPumpImpl extends AbstractOpenemsComponent
 
 		var commitMinutes = Math.max(this.heatPump.getMinRuntime().orElse(0),
 				this.config.minimumSwitchingTime() / 60);
+		// The battery power credited over the commit duration is limited by the
+		// spare energy: crediting the full sparePower in every quarter would
+		// promise more energy than available if the commit outlasts the
+		// configured support duration
+		var creditableSparePower = Math.min(sparePower,
+				Math.round(spareEssEnergy * 60F / Math.max(1, commitMinutes)));
 		var quarters = Math.max(1, (commitMinutes + 14) / 15);
 		for (var i = 0; i < Math.min(quarters, Math.min(productions.length, consumptions.length)); i++) {
 			var production = productions[i];
@@ -314,7 +324,7 @@ public class ControllerShiHeatPumpImpl extends AbstractOpenemsComponent
 			if (production == null || consumption == null) {
 				continue;
 			}
-			if (production - consumption + sparePower < minimumPower) {
+			if (production - consumption + creditableSparePower < minimumPower) {
 				return true;
 			}
 		}
@@ -362,6 +372,11 @@ public class ControllerShiHeatPumpImpl extends AbstractOpenemsComponent
 		}
 		this.heatPump.setHotWaterMode(HeatShiHeatPump.MODE_SETPOINT);
 		this.heatPump.setHotWaterSetpoint(this.config.hotWaterSetpoint());
+		// Soft-limit the heat pump to the covered power: the raised setpoint
+		// invites a power increase, which must not draw grid power before the
+		// coverage check of the next cycle would end the extension
+		this.heatPump.setLpcMode(HeatShiHeatPump.LPC_MODE_SOFT);
+		this.heatPump.setPcLimit(Math.max(0, Math.min(MAX_PC_LIMIT, surplusPower + sparePower)));
 	}
 
 	/**
