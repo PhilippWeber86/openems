@@ -15,6 +15,15 @@ public interface ControllerShiHeatPump extends OpenemsComponent {
 	public enum ChannelId implements io.openems.edge.common.channel.ChannelId {
 		ELEVATED_MODE_ACTIVE(Doc.of(OpenemsType.BOOLEAN) //
 				.text("Heat pump runs with elevated setpoints on PV surplus")), //
+		BOOST_PENDING(Doc.of(OpenemsType.BOOLEAN) //
+				.text("Elevated-mode entry conditions are fulfilled, waiting for the confirmation time")), //
+		BOOST_FORECAST_VETO(Doc.of(OpenemsType.BOOLEAN) //
+				.text("Elevated-mode entry is blocked by the forecast veto")), //
+		RUN_EXTENSION_ACTIVE(Doc.of(OpenemsType.BOOLEAN) //
+				.text("A natural hot-water run is extended to the elevated setpoint")), //
+		NATURAL_HOT_WATER_SETPOINT(Doc.of(OpenemsType.INTEGER) //
+				.unit(Unit.DEZIDEGREE_CELSIUS) //
+				.text("Hot-water setpoint of the heat pump itself, latched while no external influence is active")), //
 		ESS_SUPPORT_POWER(Doc.of(OpenemsType.INTEGER) //
 				.unit(Unit.WATT) //
 				.text("Battery power above the night reserve that may support the heat pump")), //
@@ -46,6 +55,78 @@ public interface ControllerShiHeatPump extends OpenemsComponent {
 		public Doc doc() {
 			return this.doc;
 		}
+	}
+
+	public default BooleanReadChannel getBoostPendingChannel() {
+		return this.channel(ChannelId.BOOST_PENDING);
+	}
+
+	public default Value<Boolean> getBoostPending() {
+		return this.getBoostPendingChannel().value();
+	}
+
+	/**
+	 * Internal method to set the 'nextValue' on {@link ChannelId#BOOST_PENDING}
+	 * Channel.
+	 *
+	 * @param value the next value
+	 */
+	public default void _setBoostPending(boolean value) {
+		this.getBoostPendingChannel().setNextValue(value);
+	}
+
+	public default BooleanReadChannel getBoostForecastVetoChannel() {
+		return this.channel(ChannelId.BOOST_FORECAST_VETO);
+	}
+
+	public default Value<Boolean> getBoostForecastVeto() {
+		return this.getBoostForecastVetoChannel().value();
+	}
+
+	/**
+	 * Internal method to set the 'nextValue' on
+	 * {@link ChannelId#BOOST_FORECAST_VETO} Channel.
+	 *
+	 * @param value the next value
+	 */
+	public default void _setBoostForecastVeto(boolean value) {
+		this.getBoostForecastVetoChannel().setNextValue(value);
+	}
+
+	public default BooleanReadChannel getRunExtensionActiveChannel() {
+		return this.channel(ChannelId.RUN_EXTENSION_ACTIVE);
+	}
+
+	public default Value<Boolean> getRunExtensionActive() {
+		return this.getRunExtensionActiveChannel().value();
+	}
+
+	/**
+	 * Internal method to set the 'nextValue' on
+	 * {@link ChannelId#RUN_EXTENSION_ACTIVE} Channel.
+	 *
+	 * @param value the next value
+	 */
+	public default void _setRunExtensionActive(boolean value) {
+		this.getRunExtensionActiveChannel().setNextValue(value);
+	}
+
+	public default IntegerReadChannel getNaturalHotWaterSetpointChannel() {
+		return this.channel(ChannelId.NATURAL_HOT_WATER_SETPOINT);
+	}
+
+	public default Value<Integer> getNaturalHotWaterSetpoint() {
+		return this.getNaturalHotWaterSetpointChannel().value();
+	}
+
+	/**
+	 * Internal method to set the 'nextValue' on
+	 * {@link ChannelId#NATURAL_HOT_WATER_SETPOINT} Channel.
+	 *
+	 * @param value the next value
+	 */
+	public default void _setNaturalHotWaterSetpoint(Integer value) {
+		this.getNaturalHotWaterSetpointChannel().setNextValue(value);
 	}
 
 	public default BooleanReadChannel getElevatedModeActiveChannel() {

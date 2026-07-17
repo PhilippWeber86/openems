@@ -19,6 +19,10 @@ public class MyConfig extends AbstractComponentConfig implements Config {
 		private int nightReserveBuffer = 120;
 		private int essSupportDurationMinutes = 60;
 		private int minimumSwitchingTime = 300;
+		private int boostConfirmationSeconds = 0;
+		private boolean forecastVetoEnabled = false;
+		private boolean runExtensionEnabled = true;
+		private int extensionMinTemperatureDelta = 30;
 
 		private Builder() {
 		}
@@ -80,6 +84,26 @@ public class MyConfig extends AbstractComponentConfig implements Config {
 
 		public Builder setMinimumSwitchingTime(int value) {
 			this.minimumSwitchingTime = value;
+			return this;
+		}
+
+		public Builder setBoostConfirmationSeconds(int value) {
+			this.boostConfirmationSeconds = value;
+			return this;
+		}
+
+		public Builder setForecastVetoEnabled(boolean value) {
+			this.forecastVetoEnabled = value;
+			return this;
+		}
+
+		public Builder setRunExtensionEnabled(boolean value) {
+			this.runExtensionEnabled = value;
+			return this;
+		}
+
+		public Builder setExtensionMinTemperatureDelta(int value) {
+			this.extensionMinTemperatureDelta = value;
 			return this;
 		}
 
@@ -157,6 +181,26 @@ public class MyConfig extends AbstractComponentConfig implements Config {
 	@Override
 	public int minimumSwitchingTime() {
 		return this.builder.minimumSwitchingTime;
+	}
+
+	@Override
+	public int boostConfirmationSeconds() {
+		return this.builder.boostConfirmationSeconds;
+	}
+
+	@Override
+	public boolean forecastVetoEnabled() {
+		return this.builder.forecastVetoEnabled;
+	}
+
+	@Override
+	public boolean runExtensionEnabled() {
+		return this.builder.runExtensionEnabled;
+	}
+
+	@Override
+	public int extensionMinTemperatureDelta() {
+		return this.builder.extensionMinTemperatureDelta;
 	}
 
 	@Override

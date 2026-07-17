@@ -59,6 +59,15 @@ public interface HeatShiHeatPump extends ElectricityMeter, OpenemsComponent {
 				.persistencePriority(PersistencePriority.HIGH)), //
 		HEATING_STATUS(Doc.of(OpenemsType.INTEGER)), //
 		HOT_WATER_STATUS(Doc.of(OpenemsType.INTEGER)), //
+		HOT_WATER_TEMPERATURE(Doc.of(OpenemsType.INTEGER) //
+				.unit(Unit.DEZIDEGREE_CELSIUS) //
+				.persistencePriority(PersistencePriority.HIGH) //
+				.text("Current hot water temperature")), //
+		HOT_WATER_ACTIVE_SETPOINT(Doc.of(OpenemsType.INTEGER) //
+				.unit(Unit.DEZIDEGREE_CELSIUS) //
+				.persistencePriority(PersistencePriority.HIGH) //
+				.text("Currently active hot-water setpoint of the heat pump; reflects the natural "
+						+ "setpoint only while no external influence is active")), //
 		MIN_STANDSTILL_TIME(Doc.of(OpenemsType.INTEGER) //
 				.unit(Unit.MINUTE) //
 				.text("Minimum standstill time until the compressor may start again (restart lock)")), //
@@ -85,6 +94,11 @@ public interface HeatShiHeatPump extends ElectricityMeter, OpenemsComponent {
 	public static final int LPC_MODE_NONE = 0;
 	public static final int LPC_MODE_SOFT = 1;
 	public static final int LPC_MODE_HARD = 2;
+
+	/** Value of {@link ChannelId#OPERATING_MODE_STATUS} for hot-water production. */
+	public static final int OPERATING_MODE_HOT_WATER = 1;
+	/** Value of {@link ChannelId#HEATING_STATUS}/{@link ChannelId#HOT_WATER_STATUS} for an active run. */
+	public static final int STATUS_ACTIVE = 3;
 
 	public default WriteChannel<Integer> getHeatingModeChannel() {
 		return this.channel(ChannelId.HEATING_MODE);
@@ -148,6 +162,22 @@ public interface HeatShiHeatPump extends ElectricityMeter, OpenemsComponent {
 
 	public default Value<Integer> getHeatingStatus() {
 		return this.getHeatingStatusChannel().value();
+	}
+
+	public default IntegerReadChannel getHotWaterTemperatureChannel() {
+		return this.channel(ChannelId.HOT_WATER_TEMPERATURE);
+	}
+
+	public default Value<Integer> getHotWaterTemperature() {
+		return this.getHotWaterTemperatureChannel().value();
+	}
+
+	public default IntegerReadChannel getHotWaterActiveSetpointChannel() {
+		return this.channel(ChannelId.HOT_WATER_ACTIVE_SETPOINT);
+	}
+
+	public default Value<Integer> getHotWaterActiveSetpoint() {
+		return this.getHotWaterActiveSetpointChannel().value();
 	}
 
 	public default IntegerReadChannel getMinStandstillTimeChannel() {

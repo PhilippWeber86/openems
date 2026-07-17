@@ -87,6 +87,257 @@ class ControllerShiHeatPumpImplTest {
 	}
 
 	@Test
+	void testBoostConfirmationDelaysEntry() throws Exception {
+		var clock = createDummyClock();
+		new ControllerTest(new ControllerShiHeatPumpImpl()) //
+				.addReference("cm", new DummyConfigurationAdmin()) //
+				.addReference("componentManager", new DummyComponentManager(clock)) //
+				.addReference("sum", new DummySum()) //
+				.addReference("heatPump", new DummyHeatShiHeatPump("heatPump0")) //
+				.addComponent(new DummyManagedSymmetricEss("ess0") //
+						.setPower(new DummyPower(10_000))) //
+				.activate(MyConfig.create() //
+						.setId("ctrl0") //
+						.setHeatPumpId("heatPump0") //
+						.setEssId("ess0") //
+						.setHeatPumpPosition(HeatPumpPosition.GRID_SIDE_OF_GRID_METER) //
+						.setBoostConfirmationSeconds(240) //
+						.build()) //
+				.next(new TestCase("Conditions fulfilled: pending, not yet elevated") //
+						.input("_sum", Sum.ChannelId.GRID_ACTIVE_POWER, -4000) //
+						.input("_sum", Sum.ChannelId.ESS_DISCHARGE_POWER, 0) //
+						.input("heatPump0", ElectricityMeter.ChannelId.ACTIVE_POWER, 500) //
+						.output(ControllerShiHeatPump.ChannelId.ELEVATED_MODE_ACTIVE, false) //
+						.output(ControllerShiHeatPump.ChannelId.BOOST_PENDING, true)) //
+				.next(new TestCase("After 3 minutes: still pending") //
+						.timeleap(clock, 3, ChronoUnit.MINUTES) //
+						.input("_sum", Sum.ChannelId.GRID_ACTIVE_POWER, -4000) //
+						.output(ControllerShiHeatPump.ChannelId.ELEVATED_MODE_ACTIVE, false) //
+						.output(ControllerShiHeatPump.ChannelId.BOOST_PENDING, true)) //
+				.next(new TestCase("Surplus dip resets the confirmation") //
+						.input("_sum", Sum.ChannelId.GRID_ACTIVE_POWER, 0) //
+						.output(ControllerShiHeatPump.ChannelId.ELEVATED_MODE_ACTIVE, false) //
+						.output(ControllerShiHeatPump.ChannelId.BOOST_PENDING, false)) //
+				.next(new TestCase("Surplus back: confirmation restarts") //
+						.input("_sum", Sum.ChannelId.GRID_ACTIVE_POWER, -4000) //
+						.output(ControllerShiHeatPump.ChannelId.ELEVATED_MODE_ACTIVE, false) //
+						.output(ControllerShiHeatPump.ChannelId.BOOST_PENDING, true)) //
+				.next(new TestCase("Confirmation time passed: elevated mode") //
+						.timeleap(clock, 5, ChronoUnit.MINUTES) //
+						.input("_sum", Sum.ChannelId.GRID_ACTIVE_POWER, -4000) //
+						.output(ControllerShiHeatPump.ChannelId.ELEVATED_MODE_ACTIVE, true) //
+						.output(ControllerShiHeatPump.ChannelId.BOOST_PENDING, false)) //
+				.deactivate();
+	}
+
+	@Test
+	void testForecastVetoBlocksEntry() throws Exception {
+		var clock = createDummyClock();
+		var componentManager = new DummyComponentManager(clock);
+		var sum = new DummySum();
+		var now = Instant.now(clock);
+
+		// Forecast shows no surplus at all
+		var productionValues = new Integer[24];
+		var consumptionValues = new Integer[24];
+		Arrays.fill(productionValues, 0);
+		Arrays.fill(consumptionValues, 500);
+		var predictorManager = new DummyPredictorManager(//
+				new DummyPredictor("predictor0", componentManager,
+						Prediction.from(sum, SUM_PRODUCTION_ACTIVE_POWER, now, productionValues),
+						SUM_PRODUCTION_ACTIVE_POWER),
+				new DummyPredictor("predictor1", componentManager,
+						Prediction.from(sum, SUM_CONSUMPTION_ACTIVE_POWER, now, consumptionValues),
+						SUM_CONSUMPTION_ACTIVE_POWER));
+
+		new ControllerTest(new ControllerShiHeatPumpImpl()) //
+				.addReference("cm", new DummyConfigurationAdmin()) //
+				.addReference("componentManager", componentManager) //
+				.addReference("sum", sum) //
+				.addReference("predictorManager", predictorManager) //
+				.addReference("heatPump", new DummyHeatShiHeatPump("heatPump0")) //
+				.addComponent(new DummyManagedSymmetricEss("ess0") //
+						.setPower(new DummyPower(10_000))) //
+				.activate(MyConfig.create() //
+						.setId("ctrl0") //
+						.setHeatPumpId("heatPump0") //
+						.setEssId("ess0") //
+						.setHeatPumpPosition(HeatPumpPosition.GRID_SIDE_OF_GRID_METER) //
+						.setForecastVetoEnabled(true) //
+						.build()) //
+				.next(new TestCase("Measured surplus present, but forecast vetoes entry") //
+						.input("_sum", Sum.ChannelId.GRID_ACTIVE_POWER, -4000) //
+						.input("_sum", Sum.ChannelId.ESS_DISCHARGE_POWER, 0) //
+						.input("heatPump0", ElectricityMeter.ChannelId.ACTIVE_POWER, 500) //
+						.output(ControllerShiHeatPump.ChannelId.ELEVATED_MODE_ACTIVE, false) //
+						.output(ControllerShiHeatPump.ChannelId.BOOST_FORECAST_VETO, true)) //
+				.deactivate();
+	}
+
+	@Test
+	void testForecastVetoAllowsEntryWhenSurplusPredicted() throws Exception {
+		var clock = createDummyClock();
+		var componentManager = new DummyComponentManager(clock);
+		var sum = new DummySum();
+		var now = Instant.now(clock);
+
+		// Forecast confirms the surplus
+		var productionValues = new Integer[24];
+		var consumptionValues = new Integer[24];
+		Arrays.fill(productionValues, 5000);
+		Arrays.fill(consumptionValues, 500);
+		var predictorManager = new DummyPredictorManager(//
+				new DummyPredictor("predictor0", componentManager,
+						Prediction.from(sum, SUM_PRODUCTION_ACTIVE_POWER, now, productionValues),
+						SUM_PRODUCTION_ACTIVE_POWER),
+				new DummyPredictor("predictor1", componentManager,
+						Prediction.from(sum, SUM_CONSUMPTION_ACTIVE_POWER, now, consumptionValues),
+						SUM_CONSUMPTION_ACTIVE_POWER));
+
+		new ControllerTest(new ControllerShiHeatPumpImpl()) //
+				.addReference("cm", new DummyConfigurationAdmin()) //
+				.addReference("componentManager", componentManager) //
+				.addReference("sum", sum) //
+				.addReference("predictorManager", predictorManager) //
+				.addReference("heatPump", new DummyHeatShiHeatPump("heatPump0")) //
+				.addComponent(new DummyManagedSymmetricEss("ess0") //
+						.setPower(new DummyPower(10_000))) //
+				.activate(MyConfig.create() //
+						.setId("ctrl0") //
+						.setHeatPumpId("heatPump0") //
+						.setEssId("ess0") //
+						.setHeatPumpPosition(HeatPumpPosition.GRID_SIDE_OF_GRID_METER) //
+						.setForecastVetoEnabled(true) //
+						.build()) //
+				.next(new TestCase("Forecast confirms surplus: elevated mode starts") //
+						.input("_sum", Sum.ChannelId.GRID_ACTIVE_POWER, -4000) //
+						.input("_sum", Sum.ChannelId.ESS_DISCHARGE_POWER, 0) //
+						.input("heatPump0", ElectricityMeter.ChannelId.ACTIVE_POWER, 500) //
+						.output(ControllerShiHeatPump.ChannelId.ELEVATED_MODE_ACTIVE, true) //
+						.output(ControllerShiHeatPump.ChannelId.BOOST_FORECAST_VETO, false)) //
+				.deactivate();
+	}
+
+	@Test
+	void testRunExtensionOnNaturalHotWaterRun() throws Exception {
+		var clock = createDummyClock();
+		var componentManager = new DummyComponentManager(clock);
+		var sum = new DummySum();
+		var now = Instant.now(clock);
+
+		// Night reserve 3000 Wh -> spare power 2000 W
+		var productionValues = new Integer[24];
+		var consumptionValues = new Integer[24];
+		Arrays.fill(productionValues, 0);
+		Arrays.fill(consumptionValues, 500);
+		var predictorManager = new DummyPredictorManager(//
+				new DummyPredictor("predictor0", componentManager,
+						Prediction.from(sum, SUM_PRODUCTION_ACTIVE_POWER, now, productionValues),
+						SUM_PRODUCTION_ACTIVE_POWER),
+				new DummyPredictor("predictor1", componentManager,
+						Prediction.from(sum, SUM_CONSUMPTION_ACTIVE_POWER, now, consumptionValues),
+						SUM_CONSUMPTION_ACTIVE_POWER));
+
+		new ControllerTest(new ControllerShiHeatPumpImpl()) //
+				.addReference("cm", new DummyConfigurationAdmin()) //
+				.addReference("componentManager", componentManager) //
+				.addReference("sum", sum) //
+				.addReference("predictorManager", predictorManager) //
+				.addReference("heatPump", new DummyHeatShiHeatPump("heatPump0")) //
+				.addComponent(new DummyManagedSymmetricEss("ess0") //
+						.setPower(new DummyPower(10_000))) //
+				.activate(MyConfig.create() //
+						.setId("ctrl0") //
+						.setHeatPumpId("heatPump0") //
+						.setEssId("ess0") //
+						.setHeatPumpPosition(HeatPumpPosition.GRID_SIDE_OF_GRID_METER) //
+						.setMinimumSurplusPowerForElevatedMode(4000) //
+						.setMinSoc(15) //
+						.setNightReserveBuffer(100) //
+						.setEssSupportDurationMinutes(60) //
+						.build()) //
+				// Natural hot-water run (2500 W), surplus 800 W + spare 2000 W cover it;
+				// natural setpoint 48.0 degC, elevated 55.0 degC -> delta 7 K >= 3 K
+				.next(new TestCase("Natural run fully covered: extension starts") //
+						.input("_sum", Sum.ChannelId.GRID_ACTIVE_POWER, -800) //
+						.input("_sum", Sum.ChannelId.ESS_DISCHARGE_POWER, 0) //
+						.input("_sum", Sum.ChannelId.ESS_ACTIVE_POWER, 0) //
+						.input("_sum", Sum.ChannelId.ESS_SOC, 65) //
+						.input("_sum", Sum.ChannelId.ESS_CAPACITY, 10_000) //
+						.input("heatPump0", ElectricityMeter.ChannelId.ACTIVE_POWER, 2500) //
+						.input("heatPump0", HeatShiHeatPump.ChannelId.OPERATING_MODE_STATUS, 1) //
+						.input("heatPump0", HeatShiHeatPump.ChannelId.HOT_WATER_STATUS, 3) //
+						.input("heatPump0", HeatShiHeatPump.ChannelId.HOT_WATER_MODE, 0) //
+						.input("heatPump0", HeatShiHeatPump.ChannelId.HOT_WATER_ACTIVE_SETPOINT, 480) //
+						.output("heatPump0", HeatShiHeatPump.ChannelId.HOT_WATER_MODE, 1) //
+						.output("heatPump0", HeatShiHeatPump.ChannelId.HOT_WATER_SETPOINT, 550) //
+						.output("heatPump0", HeatShiHeatPump.ChannelId.HEATING_MODE, 0) //
+						.output(ControllerShiHeatPump.ChannelId.ELEVATED_MODE_ACTIVE, false) //
+						.output(ControllerShiHeatPump.ChannelId.RUN_EXTENSION_ACTIVE, true) //
+						.output(ControllerShiHeatPump.ChannelId.NATURAL_HOT_WATER_SETPOINT, 480)) //
+				// Heat pump finished the run on its own: extension releases the registers
+				.next(new TestCase("Run finished: extension ends") //
+						.input("heatPump0", HeatShiHeatPump.ChannelId.HOT_WATER_STATUS, 1) //
+						.output("heatPump0", HeatShiHeatPump.ChannelId.HOT_WATER_MODE, 0) //
+						.output(ControllerShiHeatPump.ChannelId.RUN_EXTENSION_ACTIVE, false)) //
+				.deactivate();
+	}
+
+	@Test
+	void testRunExtensionSkippedForSmallDelta() throws Exception {
+		var clock = createDummyClock();
+		var componentManager = new DummyComponentManager(clock);
+		var sum = new DummySum();
+		var now = Instant.now(clock);
+
+		var productionValues = new Integer[24];
+		var consumptionValues = new Integer[24];
+		Arrays.fill(productionValues, 0);
+		Arrays.fill(consumptionValues, 500);
+		var predictorManager = new DummyPredictorManager(//
+				new DummyPredictor("predictor0", componentManager,
+						Prediction.from(sum, SUM_PRODUCTION_ACTIVE_POWER, now, productionValues),
+						SUM_PRODUCTION_ACTIVE_POWER),
+				new DummyPredictor("predictor1", componentManager,
+						Prediction.from(sum, SUM_CONSUMPTION_ACTIVE_POWER, now, consumptionValues),
+						SUM_CONSUMPTION_ACTIVE_POWER));
+
+		new ControllerTest(new ControllerShiHeatPumpImpl()) //
+				.addReference("cm", new DummyConfigurationAdmin()) //
+				.addReference("componentManager", componentManager) //
+				.addReference("sum", sum) //
+				.addReference("predictorManager", predictorManager) //
+				.addReference("heatPump", new DummyHeatShiHeatPump("heatPump0")) //
+				.addComponent(new DummyManagedSymmetricEss("ess0") //
+						.setPower(new DummyPower(10_000))) //
+				.activate(MyConfig.create() //
+						.setId("ctrl0") //
+						.setHeatPumpId("heatPump0") //
+						.setEssId("ess0") //
+						.setHeatPumpPosition(HeatPumpPosition.GRID_SIDE_OF_GRID_METER) //
+						.setMinimumSurplusPowerForElevatedMode(4000) //
+						.setMinSoc(15) //
+						.setNightReserveBuffer(100) //
+						.setEssSupportDurationMinutes(60) //
+						.build()) //
+				// Natural setpoint 53.0 degC -> delta to 55.0 degC is only 2 K < 3 K
+				.next(new TestCase("Delta too small: no extension") //
+						.input("_sum", Sum.ChannelId.GRID_ACTIVE_POWER, -800) //
+						.input("_sum", Sum.ChannelId.ESS_DISCHARGE_POWER, 0) //
+						.input("_sum", Sum.ChannelId.ESS_ACTIVE_POWER, 0) //
+						.input("_sum", Sum.ChannelId.ESS_SOC, 65) //
+						.input("_sum", Sum.ChannelId.ESS_CAPACITY, 10_000) //
+						.input("heatPump0", ElectricityMeter.ChannelId.ACTIVE_POWER, 2500) //
+						.input("heatPump0", HeatShiHeatPump.ChannelId.OPERATING_MODE_STATUS, 1) //
+						.input("heatPump0", HeatShiHeatPump.ChannelId.HOT_WATER_STATUS, 3) //
+						.input("heatPump0", HeatShiHeatPump.ChannelId.HOT_WATER_MODE, 0) //
+						.input("heatPump0", HeatShiHeatPump.ChannelId.HOT_WATER_ACTIVE_SETPOINT, 530) //
+						.output("heatPump0", HeatShiHeatPump.ChannelId.HOT_WATER_MODE, 0) //
+						.output(ControllerShiHeatPump.ChannelId.RUN_EXTENSION_ACTIVE, false)) //
+				.deactivate();
+	}
+
+	@Test
 	void testHysteresisRespectsCompressorCycleLimits() throws Exception {
 		var clock = createDummyClock();
 		new ControllerTest(new ControllerShiHeatPumpImpl()) //

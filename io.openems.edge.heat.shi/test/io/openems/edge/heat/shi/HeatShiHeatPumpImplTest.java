@@ -31,7 +31,7 @@ class HeatShiHeatPumpImplTest {
 
 		var tasks = sut.defineModbusProtocol().getTaskManager().getTasks();
 
-		assertEquals(7, tasks.size());
+		assertEquals(8, tasks.size());
 		assertTrue(tasks.stream().anyMatch(t -> t instanceof FC3ReadRegistersTask && t.getStartAddress() == 10000));
 		assertTrue(tasks.stream().anyMatch(t -> t instanceof FC3ReadRegistersTask && t.getStartAddress() == 10005));
 		assertTrue(tasks.stream().anyMatch(t -> t instanceof FC3ReadRegistersTask && t.getStartAddress() == 10040));
@@ -73,7 +73,7 @@ class HeatShiHeatPumpImplTest {
 
 		var tasks = sut.defineModbusProtocol().getTaskManager().getTasks();
 
-		assertEquals(15, tasks.size());
+		assertEquals(16, tasks.size());
 		for (var address : new int[] { 10000, 10001, 10002, 10005, 10006, 10007, 10040, 10041 }) {
 			assertTrue(
 					tasks.stream()

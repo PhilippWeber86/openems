@@ -68,6 +68,9 @@ public class ControllerShiHeatPumpImpl extends AbstractOpenemsComponent
 	private Config config;
 	private Instant lastModeChange = Instant.MIN;
 	private boolean elevatedModeActive = false;
+	private Instant entryConditionsSince = null;
+	private boolean runExtensionActive = false;
+	private Integer naturalHotWaterSetpoint = null;
 
 	public ControllerShiHeatPumpImpl() {
 		super(//
@@ -135,10 +138,20 @@ public class ControllerShiHeatPumpImpl extends AbstractOpenemsComponent
 		// Portion of it used to bridge missing surplus for the elevated-mode decision
 		var essSupportPower = Math.max(0, Math.min(minimumPower - surplusPower, sparePower));
 
+		this.updateNaturalHotWaterSetpoint();
+
 		// Elevated mode requires real PV surplus as its base; battery support only
 		// bridges the gap up to the minimum power. Without surplus the heat pump
 		// runs on its own schedule and is passively supported by the battery below.
-		var shouldElevate = surplusPower > 0 && surplusPower + essSupportPower >= minimumPower;
+		var entryConditions = surplusPower > 0 && surplusPower + essSupportPower >= minimumPower;
+		var boostConfirmed = this.updateBoostConfirmation(entryConditions);
+		var forecastVetoed = !this.elevatedModeActive && entryConditions
+				&& this.isForecastVetoed(minimumPower, sparePower);
+		this._setBoostForecastVeto(forecastVetoed);
+
+		var shouldElevate = this.elevatedModeActive //
+				? entryConditions //
+				: entryConditions && boostConfirmed && !forecastVetoed;
 		if (this.isHysteresisActive() && shouldElevate != this.elevatedModeActive) {
 			shouldElevate = this.elevatedModeActive;
 		}
@@ -148,18 +161,22 @@ public class ControllerShiHeatPumpImpl extends AbstractOpenemsComponent
 		}
 
 		if (this.elevatedModeActive) {
+			// A running extension is absorbed by the elevated mode
+			this.runExtensionActive = false;
 			// Never push the soft power limit below the minimum power while elevated:
 			// during the switching hysteresis a short surplus dip would otherwise
 			// shut down the compressor via a 0 W limit - the SHI documentation
 			// explicitly recommends a switch-off delay for PV-surplus operation
 			this.applyElevatedMode(Math.max(minimumPower, surplusPower + essSupportPower));
 		} else {
+			this.handleRunExtension(surplusPower, sparePower, heatPumpPower);
 			this.applyNormalMode();
 		}
 		this.applyEssSupport(sparePower, surplusPower, heatPumpPower);
 
 		this._setElevatedModeActive(this.elevatedModeActive);
 		this._setEssSupportPower(sparePower);
+		this._setRunExtensionActive(this.runExtensionActive);
 	}
 
 	/**
@@ -215,11 +232,133 @@ public class ControllerShiHeatPumpImpl extends AbstractOpenemsComponent
 		if (this.heatPump.getHeatingStatus().orElse(0) > 0) {
 			this.heatPump.setHeatingMode(HeatShiHeatPump.MODE_NONE);
 		}
-		if (this.heatPump.getHotWaterStatus().orElse(0) > 0) {
+		// The hot-water registers belong to the run extension while it is active
+		if (!this.runExtensionActive && this.heatPump.getHotWaterStatus().orElse(0) > 0) {
 			this.heatPump.setHotWaterMode(HeatShiHeatPump.MODE_NONE);
 		}
 		this.heatPump.setLpcMode(HeatShiHeatPump.LPC_MODE_NONE);
 		this.heatPump.setPcLimit(0);
+	}
+
+	/**
+	 * Latches the heat pump's own hot-water setpoint. The readback of IR10121
+	 * only reflects the natural setpoint while no external influence is active,
+	 * so it is sampled exclusively while the hot-water mode readback (HR10005)
+	 * shows "no influence". This also covers controller restarts during an
+	 * active influence and foreign Modbus masters.
+	 */
+	private void updateNaturalHotWaterSetpoint() {
+		if (this.heatPump.getHotWaterModeChannel().value().orElse(-1) == HeatShiHeatPump.MODE_NONE) {
+			var setpoint = this.heatPump.getHotWaterActiveSetpoint().get();
+			if (setpoint != null) {
+				this.naturalHotWaterSetpoint = setpoint;
+			}
+		}
+		this._setNaturalHotWaterSetpoint(this.naturalHotWaterSetpoint);
+	}
+
+	/**
+	 * Requires the elevated-mode entry conditions to be fulfilled continuously
+	 * for the configured confirmation time before entry, so short surplus spikes
+	 * do not trigger a committed compressor cycle.
+	 *
+	 * @param entryConditions whether the entry conditions are currently fulfilled
+	 * @return true once the conditions lasted for the confirmation time
+	 */
+	private boolean updateBoostConfirmation(boolean entryConditions) {
+		if (this.elevatedModeActive || !entryConditions) {
+			this.entryConditionsSince = null;
+			this._setBoostPending(false);
+			return false;
+		}
+		var now = Instant.now(this.componentManager.getClock());
+		if (this.entryConditionsSince == null) {
+			this.entryConditionsSince = now;
+		}
+		var confirmed = !this.entryConditionsSince.plusSeconds(this.config.boostConfirmationSeconds()).isAfter(now);
+		this._setBoostPending(!confirmed);
+		return confirmed;
+	}
+
+	/**
+	 * Optional forecast veto for elevated-mode entry: the prediction must show
+	 * enough surplus (plus allowed battery support) for the duration of a
+	 * compressor cycle. Lenient by design - without a prediction or with missing
+	 * values there is no veto, and it never overrules an active elevated mode.
+	 *
+	 * @param minimumPower effective minimum power for elevated mode in W
+	 * @param sparePower   battery power above the night reserve in W
+	 * @return true if entry should be vetoed
+	 */
+	private boolean isForecastVetoed(int minimumPower, int sparePower) {
+		if (!this.config.forecastVetoEnabled() || this.predictorManager == null) {
+			return false;
+		}
+		var productionPrediction = this.predictorManager.getPrediction(SUM_PRODUCTION_ACTIVE_POWER);
+		var consumptionPrediction = this.predictorManager.getPrediction(SUM_CONSUMPTION_ACTIVE_POWER);
+		if (productionPrediction.isEmpty() || consumptionPrediction.isEmpty()) {
+			return false;
+		}
+		var productions = productionPrediction.asArray();
+		var consumptions = consumptionPrediction.asArray();
+
+		var commitMinutes = Math.max(this.heatPump.getMinRuntime().orElse(0),
+				this.config.minimumSwitchingTime() / 60);
+		var quarters = Math.max(1, (commitMinutes + 14) / 15);
+		for (var i = 0; i < Math.min(quarters, Math.min(productions.length, consumptions.length)); i++) {
+			var production = productions[i];
+			var consumption = consumptions[i];
+			if (production == null || consumption == null) {
+				continue;
+			}
+			if (production - consumption + sparePower < minimumPower) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	/**
+	 * Opportunistically extends a natural hot-water run of the heat pump to the
+	 * elevated hot-water setpoint - the compressor is already running, so the
+	 * storage is topped up without an additional compressor start. Requirements,
+	 * re-evaluated every cycle: a natural hot-water run is active, PV surplus
+	 * plus allowed battery support fully cover the current heat-pump power, and
+	 * (at entry) the elevated setpoint exceeds the heat pump's own setpoint by
+	 * the configured minimum delta. Ends by simply releasing the setpoint - the
+	 * heat pump then finishes the run on its own.
+	 *
+	 * @param surplusPower  current natural PV surplus in W
+	 * @param sparePower    battery power above the night reserve in W
+	 * @param heatPumpPower current heat pump consumption in W
+	 * @throws OpenemsNamedException on error
+	 */
+	private void handleRunExtension(int surplusPower, int sparePower, int heatPumpPower)
+			throws OpenemsNamedException {
+		if (!this.config.runExtensionEnabled()) {
+			this.runExtensionActive = false;
+			return;
+		}
+		var naturalRunActive = this.heatPump.getOperatingModeStatus()
+				.orElse(-1) == HeatShiHeatPump.OPERATING_MODE_HOT_WATER
+				&& this.heatPump.getHotWaterStatus().orElse(0) == HeatShiHeatPump.STATUS_ACTIVE;
+		var fullyCovered = heatPumpPower > 0 && surplusPower + sparePower >= heatPumpPower;
+
+		if (this.runExtensionActive) {
+			if (!naturalRunActive || !fullyCovered) {
+				this.runExtensionActive = false;
+				return; // applyNormalMode releases the hot-water registers
+			}
+		} else {
+			if (!naturalRunActive || !fullyCovered || this.naturalHotWaterSetpoint == null
+					|| this.config.hotWaterSetpoint()
+							- this.naturalHotWaterSetpoint < this.config.extensionMinTemperatureDelta()) {
+				return;
+			}
+			this.runExtensionActive = true;
+		}
+		this.heatPump.setHotWaterMode(HeatShiHeatPump.MODE_SETPOINT);
+		this.heatPump.setHotWaterSetpoint(this.config.hotWaterSetpoint());
 	}
 
 	/**

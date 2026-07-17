@@ -141,6 +141,11 @@ public class HeatShiHeatPumpImpl extends AbstractOpenemsModbusComponent
 								NOT_CONFIGURED_ELSE_DIRECT), //
 						m(HeatShiHeatPump.ChannelId.HOT_WATER_STATUS, new UnsignedWordElement(10004),
 								NOT_CONFIGURED_ELSE_DIRECT)), //
+				new FC4ReadInputRegistersTask(10120, Priority.HIGH, //
+						m(HeatShiHeatPump.ChannelId.HOT_WATER_TEMPERATURE, new SignedWordElement(10120),
+								NOT_CONFIGURED_ELSE_DIRECT), //
+						m(HeatShiHeatPump.ChannelId.HOT_WATER_ACTIVE_SETPOINT, new UnsignedWordElement(10121),
+								NOT_CONFIGURED_ELSE_DIRECT)), //
 				new FC4ReadInputRegistersTask(10203, Priority.LOW, //
 						m(HeatShiHeatPump.ChannelId.MIN_STANDSTILL_TIME, new UnsignedWordElement(10203),
 								NOT_CONFIGURED_ELSE_DIRECT), //
