@@ -36,7 +36,7 @@ import org.osgi.service.metatype.annotations.ObjectClassDefinition;
 	@AttributeDefinition(name = "Heating setpoint [°C]", description = "Return temperature setpoint in °C (e.g. 55.0) while elevated mode is active.")
 	double heatingSetpoint() default 55.0;
 
-	@AttributeDefinition(name = "Hot water setpoint [°C]", description = "Hot-water temperature setpoint in °C (e.g. 55.0) while elevated mode is active.")
+	@AttributeDefinition(name = "Hot water setpoint [°C]", description = "Hot-water temperature setpoint in °C (e.g. 55.0) applied both in elevated mode and when a natural hot-water run is extended.")
 	double hotWaterSetpoint() default 55.0;
 
 	@AttributeDefinition(name = "ESS support enabled", description = "Allows forced battery export towards the heat pump while the night reserve for the household is guaranteed - both to bridge missing PV surplus in elevated mode and to cover regular heat-pump runs (e.g. hot water in the evening). Requires this Controller to be scheduled before the Balancing Controller.")
