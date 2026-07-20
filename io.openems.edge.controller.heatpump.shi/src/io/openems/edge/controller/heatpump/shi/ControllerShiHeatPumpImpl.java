@@ -566,6 +566,7 @@ public class ControllerShiHeatPumpImpl extends AbstractOpenemsComponent
 	@Override
 	public String debugLog() {
 		return "Elevated=" + this.elevatedModeActive //
+				+ "|RunExt=" + this.runExtensionActive //
 				+ "|Support=" + this.getEssSupportPower().asOptional().orElse(null) //
 				+ (switch (this.config.heatPumpPosition()) {
 				case BEHIND_GRID_METER -> "|DischargeLimit=" + this.getEssDischargeLimit().asOptional().orElse(null);
