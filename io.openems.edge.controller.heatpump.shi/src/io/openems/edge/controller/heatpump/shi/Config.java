@@ -48,11 +48,8 @@ import org.osgi.service.metatype.annotations.ObjectClassDefinition;
 	@AttributeDefinition(name = "Night reserve buffer", description = "Percentage applied to the forecasted household deficit until the next PV surplus (>100 adds a safety margin). The resulting energy is reserved in the battery for the household.")
 	int nightReserveBuffer() default 120;
 
-	@AttributeDefinition(name = "ESS support duration", description = "Assumed duration in minutes for battery-supported heat-pump operation; converts spare battery energy into allowed support power.")
-	int essSupportDurationMinutes() default 60;
-
-	@AttributeDefinition(name = "Minimum cloud buffer power", description = "Spare battery power in W that must be available before a boost or run extension may START, so a raised setpoint is never committed without the battery being able to cover a PV dip (cloud). Not required to keep a running boost alive.")
-	int minCloudBufferPower() default 1000;
+	@AttributeDefinition(name = "Maximum battery support power", description = "Optional upper limit in W for the battery power used to support the heat pump. 0 = no limit (use the full deliverable ESS power). Only needed if the heat pump should deliberately get less than the technically possible ESS power.")
+	int maxBatterySupportPower() default 0;
 
 	@AttributeDefinition(name = "Minimum switching time", description = "Lower bound in seconds between elevated mode changes. The effective hysteresis is the maximum of this value and the compressor cycle limits reported by the heat pump (minimum runtime while elevated, restart lock after leaving).")
 	int minimumSwitchingTime() default 300;

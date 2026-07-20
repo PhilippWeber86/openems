@@ -24,9 +24,12 @@ public interface ControllerShiHeatPump extends OpenemsComponent {
 		NATURAL_HOT_WATER_SETPOINT(Doc.of(OpenemsType.INTEGER) //
 				.unit(Unit.DEZIDEGREE_CELSIUS) //
 				.text("Hot-water setpoint of the heat pump itself, latched while no external influence is active")), //
+		FREE_BATTERY_ENERGY(Doc.of(OpenemsType.INTEGER) //
+				.unit(Unit.WATT_HOURS) //
+				.text("Free battery energy above the night reserve; while positive the battery may support the heat pump")), //
 		ESS_SUPPORT_POWER(Doc.of(OpenemsType.INTEGER) //
 				.unit(Unit.WATT) //
-				.text("Battery power above the night reserve that may support the heat pump")), //
+				.text("Battery power currently applied to support the heat pump")), //
 		ESS_FORCED_EXPORT_POWER(Doc.of(OpenemsType.INTEGER) //
 				.unit(Unit.WATT) //
 				.text("Battery export power forced through the grid meter towards the heat pump "
@@ -147,6 +150,24 @@ public interface ControllerShiHeatPump extends OpenemsComponent {
 	 */
 	public default void _setElevatedModeActive(boolean value) {
 		this.getElevatedModeActiveChannel().setNextValue(value);
+	}
+
+	public default IntegerReadChannel getFreeBatteryEnergyChannel() {
+		return this.channel(ChannelId.FREE_BATTERY_ENERGY);
+	}
+
+	public default Value<Integer> getFreeBatteryEnergy() {
+		return this.getFreeBatteryEnergyChannel().value();
+	}
+
+	/**
+	 * Internal method to set the 'nextValue' on
+	 * {@link ChannelId#FREE_BATTERY_ENERGY} Channel.
+	 *
+	 * @param value the next value
+	 */
+	public default void _setFreeBatteryEnergy(Integer value) {
+		this.getFreeBatteryEnergyChannel().setNextValue(value);
 	}
 
 	public default IntegerReadChannel getEssSupportPowerChannel() {

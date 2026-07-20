@@ -17,8 +17,7 @@ public class MyConfig extends AbstractComponentConfig implements Config {
 		private boolean essSupportEnabled = true;
 		private int minSoc = 15;
 		private int nightReserveBuffer = 120;
-		private int essSupportDurationMinutes = 60;
-		private int minCloudBufferPower = 0;
+		private int maxBatterySupportPower = 0;
 		private int minimumSwitchingTime = 300;
 		private int boostConfirmationSeconds = 0;
 		private boolean forecastVetoEnabled = false;
@@ -78,13 +77,8 @@ public class MyConfig extends AbstractComponentConfig implements Config {
 			return this;
 		}
 
-		public Builder setEssSupportDurationMinutes(int value) {
-			this.essSupportDurationMinutes = value;
-			return this;
-		}
-
-		public Builder setMinCloudBufferPower(int value) {
-			this.minCloudBufferPower = value;
+		public Builder setMaxBatterySupportPower(int value) {
+			this.maxBatterySupportPower = value;
 			return this;
 		}
 
@@ -180,13 +174,8 @@ public class MyConfig extends AbstractComponentConfig implements Config {
 	}
 
 	@Override
-	public int essSupportDurationMinutes() {
-		return this.builder.essSupportDurationMinutes;
-	}
-
-	@Override
-	public int minCloudBufferPower() {
-		return this.builder.minCloudBufferPower;
+	public int maxBatterySupportPower() {
+		return this.builder.maxBatterySupportPower;
 	}
 
 	@Override

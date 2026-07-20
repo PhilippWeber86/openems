@@ -140,30 +140,34 @@ public class ControllerShiHeatPumpImpl extends AbstractOpenemsComponent
 		var minimumPower = Math.max(this.config.minimumSurplusPowerForElevatedMode(),
 				this.heatPump.getMinPredictedActivePower().orElse(0));
 
+		// Energy release gate: as long as free battery energy above the night
+		// reserve exists, the battery may support the heat pump. The support POWER
+		// is NOT derived from this energy via an assumed duration - it is the real,
+		// currently needed and deliverable power (uncovered heat-pump power, clamped
+		// by the ESS and an optional cap). maxSupportPower is that upper bound; it is
+		// 0 when no energy is free (or support is disabled), MAX_PC_LIMIT for "as
+		// much as the ESS can deliver", or the configured cap.
 		var spareEssEnergy = this.calculateSpareEssEnergy();
-		// Battery power that may serve the heat pump: spare energy above the night
-		// reserve, spread over the configured support duration. With disabled ESS
-		// support this must be zero everywhere - otherwise the elevated-mode
-		// decision would count on battery power that is never delivered and the
-		// heat pump would draw the missing part from grid.
-		var sparePower = this.config.essSupportEnabled() && spareEssEnergy > 0
-				? Math.round(spareEssEnergy * 60F / Math.max(1, this.config.essSupportDurationMinutes()))
-				: 0;
+		var energyAvailable = this.config.essSupportEnabled() && spareEssEnergy > 0;
+		final var maxSupportPower = !energyAvailable ? 0
+				: this.config.maxBatterySupportPower() > 0 ? this.config.maxBatterySupportPower() : MAX_PC_LIMIT;
 
 		this.updateNaturalHotWaterSetpoint();
 
-		// Elevated mode requires REAL PV surplus as its base (no battery bridging
-		// of a weak surplus). Starting additionally requires a cloud buffer: enough
-		// spare battery power to cover a PV dip during the committed compressor
-		// cycle. That buffer is only required to START - once elevated, the boost is
-		// held on the surplus alone, so strong sun does not abort just because the
-		// battery buffer has drained.
+		// Elevated mode requires REAL PV surplus as its base (no battery bridging of
+		// a weak surplus). Committing a boost cycle additionally requires that the
+		// free battery energy can carry the heat pump through the compressor minimum
+		// runtime, so a cloud during the committed cycle can be ridden through from
+		// the battery instead of the grid. This uses the heat pump's real minimum
+		// runtime, not an assumed support duration. Once elevated, the boost is held
+		// on the surplus alone, so strong sun does not abort it when the battery
+		// drains.
 		var sunSufficient = surplusPower >= minimumPower;
-		var hasCloudBuffer = sparePower >= this.config.minCloudBufferPower();
-		var startConditions = sunSufficient && hasCloudBuffer;
+		var canSustainCommit = energyAvailable && spareEssEnergy >= this.requiredCommitEnergy(minimumPower);
+		var startConditions = sunSufficient && canSustainCommit;
 		var boostConfirmed = this.updateBoostConfirmation(startConditions);
 		var forecastVetoed = !this.elevatedModeActive && startConditions
-				&& this.isForecastVetoed(minimumPower, sparePower, spareEssEnergy);
+				&& this.isForecastVetoed(minimumPower);
 		this._setBoostForecastVeto(forecastVetoed);
 
 		var shouldElevate = this.elevatedModeActive //
@@ -184,16 +188,32 @@ public class ControllerShiHeatPumpImpl extends AbstractOpenemsComponent
 			// during the switching hysteresis a short surplus dip would otherwise
 			// shut down the compressor via a 0 W limit - the SHI documentation
 			// explicitly recommends a switch-off delay for PV-surplus operation
-			this.applyElevatedMode(Math.max(minimumPower, surplusPower + sparePower));
+			this.applyElevatedMode(Math.max(minimumPower, surplusPower + maxSupportPower));
 		} else {
-			this.handleRunExtension(surplusPower, sparePower, heatPumpPower);
+			this.handleRunExtension(surplusPower, maxSupportPower, heatPumpPower);
 			this.applyNormalMode();
 		}
-		this.applyEssSupport(sparePower, surplusPower, heatPumpPower);
+		var appliedSupport = this.applyEssSupport(maxSupportPower, surplusPower, heatPumpPower);
 
 		this._setElevatedModeActive(this.elevatedModeActive);
-		this._setEssSupportPower(sparePower);
+		this._setFreeBatteryEnergy(spareEssEnergy);
+		this._setEssSupportPower(appliedSupport);
 		this._setRunExtensionActive(this.runExtensionActive);
+	}
+
+	/**
+	 * Energy the free battery reserve must hold to commit a boost cycle: the
+	 * boost power carried through the compressor minimum runtime, so a cloud
+	 * during the committed cycle is ridden through from the battery. The runtime
+	 * is the real value reported by the heat pump (IR10204), with the configured
+	 * minimum switching time as lower bound - not an assumed support duration.
+	 *
+	 * @param minimumPower effective minimum power for elevated mode in W
+	 * @return required free battery energy in Wh
+	 */
+	private int requiredCommitEnergy(int minimumPower) {
+		var runtimeSeconds = Math.max(this.config.minimumSwitchingTime(), this.heatPump.getMinRuntime().orElse(0) * 60);
+		return Math.round(minimumPower * runtimeSeconds / 3600F);
 	}
 
 	/**
@@ -306,12 +326,10 @@ public class ControllerShiHeatPumpImpl extends AbstractOpenemsComponent
 	 * compressor cycle. Lenient by design - without a prediction or with missing
 	 * values there is no veto, and it never overrules an active elevated mode.
 	 *
-	 * @param minimumPower   effective minimum power for elevated mode in W
-	 * @param sparePower     battery power above the night reserve in W
-	 * @param spareEssEnergy battery energy above the night reserve in Wh
+	 * @param minimumPower effective minimum power for elevated mode in W
 	 * @return true if entry should be vetoed
 	 */
-	private boolean isForecastVetoed(int minimumPower, int sparePower, int spareEssEnergy) {
+	private boolean isForecastVetoed(int minimumPower) {
 		if (!this.config.forecastVetoEnabled() || this.predictorManager == null) {
 			return false;
 		}
@@ -323,14 +341,12 @@ public class ControllerShiHeatPumpImpl extends AbstractOpenemsComponent
 		var productions = productionPrediction.asArray();
 		var consumptions = consumptionPrediction.asArray();
 
+		// The veto requires the PV surplus ALONE to sustain the commit - the battery
+		// is not credited here, because carrying the commit from the battery is
+		// already guaranteed by the commit-energy check. Enabling the veto therefore
+		// means "only boost if the sun itself will sustain it".
 		var commitMinutes = Math.max(this.heatPump.getMinRuntime().orElse(0),
 				this.config.minimumSwitchingTime() / 60);
-		// The battery power credited over the commit duration is limited by the
-		// spare energy: crediting the full sparePower in every quarter would
-		// promise more energy than available if the commit outlasts the
-		// configured support duration
-		var creditableSparePower = Math.min(sparePower,
-				Math.round(spareEssEnergy * 60F / Math.max(1, commitMinutes)));
 		// The commit starts mid-quarter: it covers the remainder of the current
 		// quarter plus the overhang into subsequent quarters (e.g. a 20-minute
 		// commit at 12:14 reaches until 12:34 and touches three quarters)
@@ -345,7 +361,7 @@ public class ControllerShiHeatPumpImpl extends AbstractOpenemsComponent
 			if (production == null || consumption == null) {
 				continue;
 			}
-			if (production - consumption + creditableSparePower < minimumPower) {
+			if (production - consumption < minimumPower) {
 				return true;
 			}
 		}
@@ -362,12 +378,13 @@ public class ControllerShiHeatPumpImpl extends AbstractOpenemsComponent
 	 * the configured minimum delta. Ends by simply releasing the setpoint - the
 	 * heat pump then finishes the run on its own.
 	 *
-	 * @param surplusPower  current natural PV surplus in W
-	 * @param sparePower    battery power above the night reserve in W
-	 * @param heatPumpPower current heat pump consumption in W
+	 * @param surplusPower    current natural PV surplus in W
+	 * @param maxSupportPower upper bound of the battery support power in W (0 if no
+	 *                        free energy)
+	 * @param heatPumpPower   current heat pump consumption in W
 	 * @throws OpenemsNamedException on error
 	 */
-	private void handleRunExtension(int surplusPower, int sparePower, int heatPumpPower)
+	private void handleRunExtension(int surplusPower, int maxSupportPower, int heatPumpPower)
 			throws OpenemsNamedException {
 		if (!this.config.runExtensionEnabled()) {
 			this.runExtensionActive = false;
@@ -376,7 +393,12 @@ public class ControllerShiHeatPumpImpl extends AbstractOpenemsComponent
 		var naturalRunActive = this.heatPump.getOperatingModeStatus()
 				.orElse(-1) == HeatShiHeatPump.OPERATING_MODE_HOT_WATER
 				&& this.heatPump.getHotWaterStatus().orElse(0) == HeatShiHeatPump.STATUS_ACTIVE;
-		var fullyCovered = heatPumpPower > 0 && surplusPower + sparePower >= heatPumpPower;
+		// Full coverage from PV surplus plus deliverable battery power. Re-evaluated
+		// every cycle - when the free energy is exhausted (maxSupportPower drops to
+		// 0) and the surplus no longer covers the heat pump, the extension ends. No
+		// commit check is needed here: unlike a boost, the extension holds no
+		// compressor cycle and simply releases the setpoint.
+		var fullyCovered = heatPumpPower > 0 && surplusPower + maxSupportPower >= heatPumpPower;
 
 		if (this.runExtensionActive) {
 			if (!naturalRunActive || !fullyCovered) {
@@ -384,10 +406,7 @@ public class ControllerShiHeatPumpImpl extends AbstractOpenemsComponent
 				return; // applyNormalMode releases the hot-water registers
 			}
 		} else {
-			// Starting an extension - like a boost - requires a cloud buffer, so a
-			// raised setpoint is never committed without spare battery to cover a dip
-			if (!naturalRunActive || !fullyCovered || sparePower < this.config.minCloudBufferPower()
-					|| this.naturalHotWaterSetpoint == null
+			if (!naturalRunActive || !fullyCovered || this.naturalHotWaterSetpoint == null
 					|| this.hotWaterSetpointDeciDegree
 							- this.naturalHotWaterSetpoint < this.extensionMinDeltaDeciKelvin) {
 				return;
@@ -400,7 +419,7 @@ public class ControllerShiHeatPumpImpl extends AbstractOpenemsComponent
 		// invites a power increase, which must not draw grid power before the
 		// coverage check of the next cycle would end the extension
 		this.heatPump.setLpcMode(HeatShiHeatPump.LPC_MODE_SOFT);
-		this.heatPump.setPcLimit(Math.max(0, Math.min(MAX_PC_LIMIT, surplusPower + sparePower)));
+		this.heatPump.setPcLimit(Math.max(0, Math.min(MAX_PC_LIMIT, surplusPower + maxSupportPower)));
 	}
 
 	/**
@@ -423,17 +442,21 @@ public class ControllerShiHeatPumpImpl extends AbstractOpenemsComponent
 	 * capped at the current heat-pump consumption that is not already covered by
 	 * PV export, so battery energy is not sold to the grid.
 	 *
-	 * @param sparePower    battery power above the night reserve in W
-	 * @param surplusPower  current natural PV surplus in W
-	 * @param heatPumpPower current heat pump consumption in W
+	 * @param maxSupportPower upper bound of the battery support power in W (0 if no
+	 *                        free energy); the real support is the uncovered
+	 *                        heat-pump power capped at this and clamped by the ESS
+	 * @param surplusPower    current natural PV surplus in W
+	 * @param heatPumpPower   current heat pump consumption in W
+	 * @return the battery support power actually applied in W
 	 * @throws OpenemsNamedException on error
 	 */
-	private void applyEssSupport(int sparePower, int surplusPower, int heatPumpPower) throws OpenemsNamedException {
-		var supportEnabled = this.config.essSupportEnabled();
+	private int applyEssSupport(int maxSupportPower, int surplusPower, int heatPumpPower) throws OpenemsNamedException {
 		switch (this.config.heatPumpPosition()) {
 		case BEHIND_GRID_METER -> {
 			this._setEssForcedExportPower(null);
-			var supportPower = supportEnabled ? Math.min(sparePower, heatPumpPower) : 0;
+			// Only the uncovered part of the heat pump needs battery; capped at the
+			// deliverable support power and clamped by the ESS below.
+			var supportPower = Math.min(maxSupportPower, heatPumpPower);
 			ManagedSymmetricEss ess = this.componentManager.getComponent(this.config.ess_id());
 			var householdDischarge = Math.max(0,
 					this.sum.getGridActivePower().orElse(0) + this.sum.getEssActivePower().orElse(0) - heatPumpPower);
@@ -441,25 +464,24 @@ public class ControllerShiHeatPumpImpl extends AbstractOpenemsComponent
 					householdDischarge + supportPower);
 			ess.setActivePowerLessOrEquals(limit);
 			this._setEssDischargeLimit(limit);
+			return supportPower;
 		}
 		case GRID_SIDE_OF_GRID_METER -> {
 			this._setEssDischargeLimit(null);
-			if (!supportEnabled) {
-				this._setEssForcedExportPower(null);
-				return;
-			}
-			var forcedExportPower = Math.min(sparePower, Math.max(0, heatPumpPower - surplusPower));
+			var forcedExportPower = Math.min(maxSupportPower, Math.max(0, heatPumpPower - surplusPower));
 			this._setEssForcedExportPower(forcedExportPower);
 			if (forcedExportPower <= 0) {
-				return;
+				return 0;
 			}
 			ManagedSymmetricEss ess = this.componentManager.getComponent(this.config.ess_id());
 			var requiredPower = this.sum.getEssActivePower().orElse(0) + this.sum.getGridActivePower().orElse(0)
 					+ forcedExportPower;
 			requiredPower = ess.getPower().fitValueIntoMinMaxPower(this.id(), ess, ALL, ACTIVE, requiredPower);
 			ess.setActivePowerGreaterOrEquals(requiredPower);
+			return forcedExportPower;
 		}
 		}
+		return 0;
 	}
 
 	/**
