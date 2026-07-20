@@ -131,7 +131,7 @@ class ControllerShiHeatPumpImplTest {
 	}
 
 	@Test
-	void testBoostBlockedWithoutFreeEnergy() throws Exception {
+	void testBoostStartsOnSunWithoutFreeEnergy() throws Exception {
 		var clock = createDummyClock();
 		new ControllerTest(new ControllerShiHeatPumpImpl()) //
 				.addReference("cm", new DummyConfigurationAdmin()) //
@@ -146,13 +146,17 @@ class ControllerShiHeatPumpImplTest {
 						.setEssId("ess0") //
 						.setHeatPumpPosition(HeatPumpPosition.GRID_SIDE_OF_GRID_METER) //
 						.build()) //
-				// Strong export but no prediction -> free energy 0 -> the commit cannot
-				// be backed by the battery -> no boost (the live grid-feeding case)
-				.next(new TestCase("Strong export but no free battery energy: no boost") //
+				// Strong export but no prediction -> free energy 0. Running the heat pump
+				// on surplus is the base case, so a strong surplus must still start a
+				// boost - the battery is a bonus, not an entry precondition. No free
+				// energy just means no battery support (forced export stays 0).
+				.next(new TestCase("Strong export, no free battery energy: boost on sun alone") //
 						.input("_sum", Sum.ChannelId.GRID_ACTIVE_POWER, -4000) //
 						.input("_sum", Sum.ChannelId.ESS_DISCHARGE_POWER, 0) //
 						.input("heatPump0", ElectricityMeter.ChannelId.ACTIVE_POWER, 0) //
-						.output(ControllerShiHeatPump.ChannelId.ELEVATED_MODE_ACTIVE, false)) //
+						.output(ControllerShiHeatPump.ChannelId.ELEVATED_MODE_ACTIVE, true) //
+						.output(ControllerShiHeatPump.ChannelId.FREE_BATTERY_ENERGY, 0) //
+						.output(ControllerShiHeatPump.ChannelId.ESS_FORCED_EXPORT_POWER, 0)) //
 				.deactivate();
 	}
 
@@ -276,9 +280,8 @@ class ControllerShiHeatPumpImplTest {
 		var cm = new DummyComponentManager(clock);
 		var sum = new DummySum();
 		// Production is 0 for the current quarter (cloud now) but high afterwards, so
-		// the night reserve stays small (free energy exists and the commit-energy
-		// check passes) while the veto - which requires the sun alone to sustain the
-		// commit - fires on the current quarter.
+		// the night reserve stays small while the veto - which requires the sun alone
+		// to sustain the commit - fires on the current quarter.
 		var prod = new Integer[96];
 		var cons = new Integer[96];
 		Arrays.fill(prod, 5000);
@@ -514,12 +517,13 @@ class ControllerShiHeatPumpImplTest {
 	}
 
 	@Test
-	void testNoSupportWhenReserveClaimsEnergy() throws Exception {
+	void testBoostWithoutSupportWhenReserveClaimsEnergy() throws Exception {
 		var clock = createDummyClock();
 		var cm = new DummyComponentManager(clock);
 		var sum = new DummySum();
 		// Flat forecast: no production, 1500 W household -> big night reserve that
-		// claims all usable energy at 40 % SoC -> no free energy -> no support.
+		// claims all usable energy at 40 % SoC -> no free energy -> no battery
+		// support. The strong PV surplus alone still starts the boost, though.
 		new ControllerTest(new ControllerShiHeatPumpImpl()) //
 				.addReference("cm", new DummyConfigurationAdmin()) //
 				.addReference("componentManager", cm) //
@@ -536,13 +540,13 @@ class ControllerShiHeatPumpImplTest {
 						.setMinSoc(15) //
 						.setNightReserveBuffer(100) //
 						.build()) //
-				.next(new TestCase("Reserve claims all usable energy: no support, no boost") //
+				.next(new TestCase("Reserve claims all usable energy: boost on sun, no support") //
 						.input("_sum", Sum.ChannelId.GRID_ACTIVE_POWER, -4000) //
 						.input("_sum", Sum.ChannelId.ESS_DISCHARGE_POWER, 0) //
 						.input("_sum", Sum.ChannelId.ESS_SOC, 40) //
 						.input("_sum", Sum.ChannelId.ESS_CAPACITY, 10_000) //
 						.input("heatPump0", ElectricityMeter.ChannelId.ACTIVE_POWER, 2000) //
-						.output(ControllerShiHeatPump.ChannelId.ELEVATED_MODE_ACTIVE, false) //
+						.output(ControllerShiHeatPump.ChannelId.ELEVATED_MODE_ACTIVE, true) //
 						.output(ControllerShiHeatPump.ChannelId.ESS_FORCED_EXPORT_POWER, 0) //
 						.output(ControllerShiHeatPump.ChannelId.FREE_BATTERY_ENERGY, 0)) //
 				.deactivate();
@@ -779,7 +783,7 @@ class ControllerShiHeatPumpImplTest {
 	}
 
 	@Test
-	void testDisabledEssSupportBlocksBoostAndSupport() throws Exception {
+	void testDisabledEssSupportStillBoostsWithoutSupport() throws Exception {
 		var clock = createDummyClock();
 		var cm = new DummyComponentManager(clock);
 		var sum = new DummySum();
@@ -798,15 +802,17 @@ class ControllerShiHeatPumpImplTest {
 						.setHeatPumpPosition(HeatPumpPosition.GRID_SIDE_OF_GRID_METER) //
 						.setEssSupportEnabled(false) //
 						.build()) //
-				// Support disabled -> no free energy is credited -> no boost, no forced
-				// export, even with a sunny forecast.
-				.next(new TestCase("Disabled support: no boost, no forced export") //
+				// Support disabled -> the battery contributes nothing (no free energy
+				// credited, no forced export). The boost itself still runs on the PV
+				// surplus alone - disabling battery support must not disable the boost.
+				.next(new TestCase("Disabled support: boost on surplus, no forced export") //
 						.input("_sum", Sum.ChannelId.GRID_ACTIVE_POWER, -4000) //
 						.input("_sum", Sum.ChannelId.ESS_DISCHARGE_POWER, 0) //
 						.input("_sum", Sum.ChannelId.ESS_SOC, 65) //
 						.input("_sum", Sum.ChannelId.ESS_CAPACITY, 10_000) //
 						.input("heatPump0", ElectricityMeter.ChannelId.ACTIVE_POWER, 2000) //
-						.output(ControllerShiHeatPump.ChannelId.ELEVATED_MODE_ACTIVE, false) //
+						.output(ControllerShiHeatPump.ChannelId.ELEVATED_MODE_ACTIVE, true) //
+						.output(ControllerShiHeatPump.ChannelId.FREE_BATTERY_ENERGY, 0) //
 						.output(ControllerShiHeatPump.ChannelId.ESS_FORCED_EXPORT_POWER, 0)) //
 				.deactivate();
 	}

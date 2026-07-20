@@ -154,25 +154,24 @@ public class ControllerShiHeatPumpImpl extends AbstractOpenemsComponent
 
 		this.updateNaturalHotWaterSetpoint();
 
-		// Elevated mode requires REAL PV surplus as its base (no battery bridging of
-		// a weak surplus). Committing a boost cycle additionally requires that the
-		// free battery energy can carry the heat pump through the compressor minimum
-		// runtime, so a cloud during the committed cycle can be ridden through from
-		// the battery instead of the grid. This uses the heat pump's real minimum
-		// runtime, not an assumed support duration. Once elevated, the boost is held
-		// on the surplus alone, so strong sun does not abort it when the battery
-		// drains.
+		// Elevated mode starts and holds on REAL PV surplus alone. Running the heat
+		// pump on surplus is the base case, so the absence of free battery energy -
+		// support disabled, battery drained, or no prediction - must NOT block a
+		// boost when the sun alone is strong enough. Free battery energy, when
+		// present, is not an entry precondition: it is spent cyclically during the
+		// run to ride out clouds from the battery instead of the grid (see
+		// applyEssSupport), and it stops when exhausted. To gate entry on the
+		// forecast (only start when the sun is predicted to sustain the committed
+		// cycle) enable the optional forecast veto.
 		var sunSufficient = surplusPower >= minimumPower;
-		var canSustainCommit = energyAvailable && spareEssEnergy >= this.requiredCommitEnergy(minimumPower);
-		var startConditions = sunSufficient && canSustainCommit;
-		var boostConfirmed = this.updateBoostConfirmation(startConditions);
-		var forecastVetoed = !this.elevatedModeActive && startConditions
+		var boostConfirmed = this.updateBoostConfirmation(sunSufficient);
+		var forecastVetoed = !this.elevatedModeActive && sunSufficient
 				&& this.isForecastVetoed(minimumPower);
 		this._setBoostForecastVeto(forecastVetoed);
 
 		var shouldElevate = this.elevatedModeActive //
 				? sunSufficient //
-				: startConditions && boostConfirmed && !forecastVetoed;
+				: sunSufficient && boostConfirmed && !forecastVetoed;
 		if (this.isHysteresisActive() && shouldElevate != this.elevatedModeActive) {
 			shouldElevate = this.elevatedModeActive;
 		}
@@ -196,24 +195,12 @@ public class ControllerShiHeatPumpImpl extends AbstractOpenemsComponent
 		var appliedSupport = this.applyEssSupport(maxSupportPower, surplusPower, heatPumpPower);
 
 		this._setElevatedModeActive(this.elevatedModeActive);
-		this._setFreeBatteryEnergy(spareEssEnergy);
+		// The free battery energy is the energy released to the heat pump: it is the
+		// spare energy above the night reserve, but 0 when battery support is
+		// disabled (nothing is released, regardless of the physical reserve).
+		this._setFreeBatteryEnergy(energyAvailable ? spareEssEnergy : 0);
 		this._setEssSupportPower(appliedSupport);
 		this._setRunExtensionActive(this.runExtensionActive);
-	}
-
-	/**
-	 * Energy the free battery reserve must hold to commit a boost cycle: the
-	 * boost power carried through the compressor minimum runtime, so a cloud
-	 * during the committed cycle is ridden through from the battery. The runtime
-	 * is the real value reported by the heat pump (IR10204), with the configured
-	 * minimum switching time as lower bound - not an assumed support duration.
-	 *
-	 * @param minimumPower effective minimum power for elevated mode in W
-	 * @return required free battery energy in Wh
-	 */
-	private int requiredCommitEnergy(int minimumPower) {
-		var runtimeSeconds = Math.max(this.config.minimumSwitchingTime(), this.heatPump.getMinRuntime().orElse(0) * 60);
-		return Math.round(minimumPower * runtimeSeconds / 3600F);
 	}
 
 	/**
