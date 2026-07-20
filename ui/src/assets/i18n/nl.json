@@ -329,6 +329,7 @@
           "BATTERY_SUPPORT_AVAILABLE": "Available battery support",
           "BOOST_ACTIVE": "Boost (PV surplus)",
           "DISCHARGE_LIMIT": "Storage discharge limit",
+          "FREE_BATTERY_ENERGY": "Free battery energy",
           "HEAT_PUMP_POWER": "Heat pump power",
           "NIGHT_RESERVE": "Household night reserve",
           "NORMAL_MODE": "Normal operation"

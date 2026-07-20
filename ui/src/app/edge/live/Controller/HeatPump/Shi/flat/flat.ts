@@ -23,9 +23,8 @@ export class ControllerHeatPumpShiComponent extends AbstractFlatWidget {
 
     protected state: string | null = null;
     protected heatPumpPower: number | null = null;
+    protected freeBatteryEnergy: number | null = null;
     protected essSupportPower: number | null = null;
-    protected essForcedExportPower: number | null = null;
-    protected essDischargeLimit: number | null = null;
     protected nightReserveEnergy: number | null = null;
     protected heatPumpId: string | null = null;
 
@@ -35,9 +34,8 @@ export class ControllerHeatPumpShiComponent extends AbstractFlatWidget {
         }
         const channelAddresses: ChannelAddress[] = [
             new ChannelAddress(this.componentId, "ElevatedModeActive"),
+            new ChannelAddress(this.componentId, "FreeBatteryEnergy"),
             new ChannelAddress(this.componentId, "EssSupportPower"),
-            new ChannelAddress(this.componentId, "EssForcedExportPower"),
-            new ChannelAddress(this.componentId, "EssDischargeLimit"),
             new ChannelAddress(this.componentId, "NightReserveEnergy"),
         ];
         this.heatPumpId = this.component.properties["heatPump.id"] ?? null;
@@ -51,9 +49,8 @@ export class ControllerHeatPumpShiComponent extends AbstractFlatWidget {
         this.state = currentData.allComponents[this.componentId + "/ElevatedModeActive"] == 1
             ? this.translate.instant("EDGE.INDEX.WIDGETS.SHI_HEAT_PUMP.BOOST_ACTIVE")
             : this.translate.instant("EDGE.INDEX.WIDGETS.SHI_HEAT_PUMP.NORMAL_MODE");
+        this.freeBatteryEnergy = currentData.allComponents[this.componentId + "/FreeBatteryEnergy"] ?? null;
         this.essSupportPower = currentData.allComponents[this.componentId + "/EssSupportPower"] ?? null;
-        this.essForcedExportPower = currentData.allComponents[this.componentId + "/EssForcedExportPower"] ?? null;
-        this.essDischargeLimit = currentData.allComponents[this.componentId + "/EssDischargeLimit"] ?? null;
         this.nightReserveEnergy = currentData.allComponents[this.componentId + "/NightReserveEnergy"] ?? null;
         if (this.heatPumpId) {
             this.heatPumpPower = currentData.allComponents[this.heatPumpId + "/ActivePower"] ?? null;

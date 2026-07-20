@@ -521,6 +521,7 @@
                     "BATTERY_SUPPORT_AVAILABLE": "Verfügbarer Akku-Support",
                     "BOOST_ACTIVE": "Boost (PV-Überschuss)",
                     "DISCHARGE_LIMIT": "Entladelimit Speicher",
+                    "FREE_BATTERY_ENERGY": "Freie Akkuenergie",
                     "HEAT_PUMP_POWER": "Leistung Wärmepumpe",
                     "NIGHT_RESERVE": "Nachtreserve Haushalt",
                     "NORMAL_MODE": "Normalbetrieb"
