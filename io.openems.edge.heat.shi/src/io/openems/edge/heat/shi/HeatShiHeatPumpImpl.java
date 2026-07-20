@@ -135,6 +135,11 @@ public class HeatShiHeatPumpImpl extends AbstractOpenemsModbusComponent
 								new ChannelMetaInfoReadAndWrite(10040, 10040)), //
 						m(HeatShiHeatPump.ChannelId.PC_LIMIT, new UnsignedWordElement(10041), MULTIPLY(100.0),
 								new ChannelMetaInfoReadAndWrite(10041, 10041))), //
+				new FC3ReadRegistersTask(10070, Priority.LOW, //
+						m(HeatShiHeatPump.ChannelId.CIRCULATION, new UnsignedWordElement(10070),
+								NOT_CONFIGURED_ELSE_DIRECT, new ChannelMetaInfoReadAndWrite(10070, 10070)), //
+						m(HeatShiHeatPump.ChannelId.EXTRA_HOT_WATER, new UnsignedWordElement(10071),
+								NOT_CONFIGURED_ELSE_DIRECT, new ChannelMetaInfoReadAndWrite(10071, 10071))), //
 				new FC4ReadInputRegistersTask(10000, Priority.HIGH, //
 						m(HeatShiHeatPump.ChannelId.HEAT_PUMP_STATUS, new UnsignedWordElement(10000))), //
 				new FC4ReadInputRegistersTask(10002, Priority.HIGH, //
@@ -177,6 +182,12 @@ public class HeatShiHeatPumpImpl extends AbstractOpenemsModbusComponent
 			protocol.addTask(new FC6WriteRegisterTask(10007, //
 					m(HeatShiHeatPump.ChannelId.HOT_WATER_OFFSET, new SignedWordElement(10007),
 							new ChannelMetaInfoReadAndWrite(10007, 10007))));
+			protocol.addTask(new FC6WriteRegisterTask(10070, //
+					m(HeatShiHeatPump.ChannelId.CIRCULATION, new UnsignedWordElement(10070),
+							new ChannelMetaInfoReadAndWrite(10070, 10070))));
+			protocol.addTask(new FC6WriteRegisterTask(10071, //
+					m(HeatShiHeatPump.ChannelId.EXTRA_HOT_WATER, new UnsignedWordElement(10071),
+							new ChannelMetaInfoReadAndWrite(10071, 10071))));
 			protocol.addTask(new FC6WriteRegisterTask(10040, //
 					m(HeatShiHeatPump.ChannelId.LPC_MODE, new UnsignedWordElement(10040),
 							new ChannelMetaInfoReadAndWrite(10040, 10040))));

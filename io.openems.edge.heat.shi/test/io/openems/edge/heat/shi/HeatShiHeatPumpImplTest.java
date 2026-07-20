@@ -31,10 +31,11 @@ class HeatShiHeatPumpImplTest {
 
 		var tasks = sut.defineModbusProtocol().getTaskManager().getTasks();
 
-		assertEquals(8, tasks.size());
+		assertEquals(9, tasks.size());
 		assertTrue(tasks.stream().anyMatch(t -> t instanceof FC3ReadRegistersTask && t.getStartAddress() == 10000));
 		assertTrue(tasks.stream().anyMatch(t -> t instanceof FC3ReadRegistersTask && t.getStartAddress() == 10005));
 		assertTrue(tasks.stream().anyMatch(t -> t instanceof FC3ReadRegistersTask && t.getStartAddress() == 10040));
+		assertTrue(tasks.stream().anyMatch(t -> t instanceof FC3ReadRegistersTask && t.getStartAddress() == 10070));
 		assertTrue(tasks.stream().anyMatch(t -> t instanceof FC4ReadInputRegistersTask && t.getStartAddress() == 10000));
 		assertTrue(tasks.stream().anyMatch(t -> t instanceof FC4ReadInputRegistersTask && t.getStartAddress() == 10002));
 		assertTrue(tasks.stream().anyMatch(t -> t instanceof FC4ReadInputRegistersTask && t.getStartAddress() == 10301));
@@ -74,8 +75,8 @@ class HeatShiHeatPumpImplTest {
 
 		var tasks = sut.defineModbusProtocol().getTaskManager().getTasks();
 
-		assertEquals(16, tasks.size());
-		for (var address : new int[] { 10000, 10001, 10002, 10005, 10006, 10007, 10040, 10041 }) {
+		assertEquals(19, tasks.size());
+		for (var address : new int[] { 10000, 10001, 10002, 10005, 10006, 10007, 10040, 10041, 10070, 10071 }) {
 			assertTrue(
 					tasks.stream()
 							.anyMatch(t -> t instanceof FC6WriteRegisterTask && t.getStartAddress() == address),

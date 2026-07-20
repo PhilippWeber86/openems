@@ -68,6 +68,16 @@ public interface HeatShiHeatPump extends ElectricityMeter, OpenemsComponent {
 				.persistencePriority(PersistencePriority.HIGH) //
 				.text("Currently active hot-water setpoint of the heat pump; reflects the natural "
 						+ "setpoint only while no external influence is active")), //
+		CIRCULATION(Doc.of(OpenemsType.INTEGER) //
+				.accessMode(AccessMode.READ_WRITE) //
+				.persistencePriority(PersistencePriority.HIGH) //
+				.text("Starts the hot-water circulation pump (0=no influence, 1=start). The heat pump "
+						+ "resets it automatically after its configured circulation time. Requires "
+						+ "flexConfig 'out 2' = ZIP at the heat pump")), //
+		EXTRA_HOT_WATER(Doc.of(OpenemsType.INTEGER) //
+				.accessMode(AccessMode.READ_WRITE) //
+				.persistencePriority(PersistencePriority.HIGH) //
+				.text("Switches the extra hot-water function (0=off, 1=on)")), //
 		READ_ONLY_MODE(Doc.of(OpenemsType.BOOLEAN) //
 				.persistencePriority(PersistencePriority.HIGH) //
 				.text("Read-only mode is active; no setpoints are written to the heat pump")), //
@@ -165,6 +175,22 @@ public interface HeatShiHeatPump extends ElectricityMeter, OpenemsComponent {
 
 	public default Value<Integer> getHeatingStatus() {
 		return this.getHeatingStatusChannel().value();
+	}
+
+	public default WriteChannel<Integer> getCirculationChannel() {
+		return this.channel(ChannelId.CIRCULATION);
+	}
+
+	public default void setCirculation(int value) throws OpenemsNamedException {
+		this.getCirculationChannel().setNextWriteValue(value);
+	}
+
+	public default WriteChannel<Integer> getExtraHotWaterChannel() {
+		return this.channel(ChannelId.EXTRA_HOT_WATER);
+	}
+
+	public default void setExtraHotWater(int value) throws OpenemsNamedException {
+		this.getExtraHotWaterChannel().setNextWriteValue(value);
 	}
 
 	public default io.openems.edge.common.channel.BooleanReadChannel getReadOnlyModeChannel() {
