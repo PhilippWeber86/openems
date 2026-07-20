@@ -707,6 +707,88 @@ class ControllerShiHeatPumpImplTest {
 	}
 
 	@Test
+	void testBehindMeterActiveSupportZeroWhenBatteryIdle() throws Exception {
+		var clock = createDummyClock();
+		var cm = new DummyComponentManager(clock);
+		var sum = new DummySum();
+		new ControllerTest(new ControllerShiHeatPumpImpl()) //
+				.addReference("cm", new DummyConfigurationAdmin()) //
+				.addReference("componentManager", cm) //
+				.addReference("sum", sum) //
+				.addReference("predictorManager", sunnyPredictor(cm, sum, Instant.now(clock))) //
+				.addReference("heatPump", new DummyHeatShiHeatPump("heatPump0") //
+						.withMeterType(MeterType.CONSUMPTION_METERED)) //
+				.addComponent(new DummyManagedSymmetricEss("ess0") //
+						.setPower(new DummyPower(10_000))) //
+				.activate(MyConfig.create() //
+						.setId("ctrl0") //
+						.setHeatPumpId("heatPump0") //
+						.setEssId("ess0") //
+						.setHeatPumpPosition(HeatPumpPosition.BEHIND_GRID_METER) //
+						.setMinimumSurplusPowerForElevatedMode(5000) //
+						.build()) //
+				// PV exports (grid -1000 W), the battery is idle (0 W) and covers the
+				// household from PV. The discharge allowance for the heat pump is raised
+				// to 2000 W, but the battery delivers nothing - so the ACTIVE support is
+				// 0, not the granted allowance.
+				.next(new TestCase("Battery idle while PV exports: active support is 0") //
+						.input("_sum", Sum.ChannelId.GRID_ACTIVE_POWER, -1000) //
+						.input("_sum", Sum.ChannelId.ESS_DISCHARGE_POWER, 0) //
+						.input("_sum", Sum.ChannelId.ESS_ACTIVE_POWER, 0) //
+						.input("_sum", Sum.ChannelId.ESS_SOC, 65) //
+						.input("_sum", Sum.ChannelId.ESS_CAPACITY, 10_000) //
+						.input("heatPump0", ElectricityMeter.ChannelId.ACTIVE_POWER, 2000) //
+						.output(ControllerShiHeatPump.ChannelId.ELEVATED_MODE_ACTIVE, false) //
+						.output(ControllerShiHeatPump.ChannelId.ESS_DISCHARGE_LIMIT, 2000) //
+						.output(ControllerShiHeatPump.ChannelId.ESS_SUPPORT_POWER, 0)) //
+				.deactivate();
+	}
+
+	@Test
+	void testWeakBatteryLimitsSupportAndCoverage() throws Exception {
+		var clock = createDummyClock();
+		var cm = new DummyComponentManager(clock);
+		var sum = new DummySum();
+		new ControllerTest(new ControllerShiHeatPumpImpl()) //
+				.addReference("cm", new DummyConfigurationAdmin()) //
+				.addReference("componentManager", cm) //
+				.addReference("sum", sum) //
+				.addReference("predictorManager", sunnyPredictor(cm, sum, Instant.now(clock))) //
+				.addReference("heatPump", new DummyHeatShiHeatPump("heatPump0")) //
+				// The ESS can only deliver 1000 W right now, even though plenty of energy
+				// is free above the reserve.
+				.addComponent(new DummyManagedSymmetricEss("ess0") //
+						.setPower(new DummyPower(1000))) //
+				.activate(MyConfig.create() //
+						.setId("ctrl0") //
+						.setHeatPumpId("heatPump0") //
+						.setEssId("ess0") //
+						.setHeatPumpPosition(HeatPumpPosition.GRID_SIDE_OF_GRID_METER) //
+						.setMinimumSurplusPowerForElevatedMode(4000) //
+						.build()) //
+				// Natural hot-water run of 2500 W, 800 W export. The support power is
+				// bounded by the deliverable ESS power (1000 W), so the forced export is
+				// 1000 W - not the 1700 W the heat pump could take. And since 800 + 1000
+				// < 2500, the run is NOT fully covered, so the run extension does not
+				// start (with the old 30 kW assumption it wrongly would, then draw grid).
+				.next(new TestCase("Weak battery: support capped, coverage not assumed") //
+						.input("_sum", Sum.ChannelId.GRID_ACTIVE_POWER, -800) //
+						.input("_sum", Sum.ChannelId.ESS_DISCHARGE_POWER, 0) //
+						.input("_sum", Sum.ChannelId.ESS_ACTIVE_POWER, 0) //
+						.input("_sum", Sum.ChannelId.ESS_SOC, 65) //
+						.input("_sum", Sum.ChannelId.ESS_CAPACITY, 10_000) //
+						.input("heatPump0", ElectricityMeter.ChannelId.ACTIVE_POWER, 2500) //
+						.input("heatPump0", HeatShiHeatPump.ChannelId.OPERATING_MODE_STATUS, 1) //
+						.input("heatPump0", HeatShiHeatPump.ChannelId.HOT_WATER_STATUS, 3) //
+						.input("heatPump0", HeatShiHeatPump.ChannelId.HOT_WATER_MODE, 0) //
+						.input("heatPump0", HeatShiHeatPump.ChannelId.HOT_WATER_ACTIVE_SETPOINT, 480) //
+						.output(ControllerShiHeatPump.ChannelId.ELEVATED_MODE_ACTIVE, false) //
+						.output(ControllerShiHeatPump.ChannelId.RUN_EXTENSION_ACTIVE, false) //
+						.output(ControllerShiHeatPump.ChannelId.ESS_FORCED_EXPORT_POWER, 1000)) //
+				.deactivate();
+	}
+
+	@Test
 	void testPredictionsFromUnmanagedChannels() throws Exception {
 		var clock = createDummyClock();
 		var cm = new DummyComponentManager(clock);

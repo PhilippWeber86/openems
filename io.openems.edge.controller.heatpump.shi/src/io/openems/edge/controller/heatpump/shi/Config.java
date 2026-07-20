@@ -30,7 +30,7 @@ import org.osgi.service.metatype.annotations.ObjectClassDefinition;
 	@AttributeDefinition(name = "Heat pump position", description = "Where the heat pump is connected relative to the grid meter: BEHIND_GRID_METER (standard, grid meter at the grid connection point; the Controller limits ESS discharge so the battery does not serve the heat pump beyond the allowed support) or GRID_SIDE_OF_GRID_METER (heat pump upstream of the grid meter; the Controller forces battery export towards the heat pump while support is allowed).")
 	HeatPumpPosition heatPumpPosition() default HeatPumpPosition.BEHIND_GRID_METER;
 
-	@AttributeDefinition(name = "Minimum surplus power for elevated mode", description = "Power in W that must be covered by PV surplus plus allowed ESS support before elevated mode starts.")
+	@AttributeDefinition(name = "Minimum surplus power for elevated mode", description = "Power in W that the PV surplus ALONE must reach before elevated mode starts. The battery does not bridge a weak surplus over this threshold; it only supports the heat pump during the run.")
 	int minimumSurplusPowerForElevatedMode() default 2500;
 
 	@AttributeDefinition(name = "Heating setpoint [°C]", description = "Return temperature setpoint in °C (e.g. 55.0) while elevated mode is active.")
@@ -39,7 +39,7 @@ import org.osgi.service.metatype.annotations.ObjectClassDefinition;
 	@AttributeDefinition(name = "Hot water setpoint [°C]", description = "Hot-water temperature setpoint in °C (e.g. 55.0) applied both in elevated mode and when a natural hot-water run is extended.")
 	double hotWaterSetpoint() default 55.0;
 
-	@AttributeDefinition(name = "ESS support enabled", description = "Allows forced battery export towards the heat pump while the night reserve for the household is guaranteed - both to bridge missing PV surplus in elevated mode and to cover regular heat-pump runs (e.g. hot water in the evening). Requires this Controller to be scheduled before the Balancing Controller.")
+	@AttributeDefinition(name = "ESS support enabled", description = "Allows the battery to support the heat pump while the night reserve for the household is guaranteed - during a PV-surplus boost (riding out clouds) and for regular heat-pump runs (e.g. hot water in the evening). This only controls the battery support: with it disabled the heat pump still runs on PV surplus (elevated mode) on its own. Requires this Controller to be scheduled before the Balancing Controller.")
 	boolean essSupportEnabled() default true;
 
 	@AttributeDefinition(name = "Minimum SoC", description = "Battery SoC in % that is never used for the heat pump.")

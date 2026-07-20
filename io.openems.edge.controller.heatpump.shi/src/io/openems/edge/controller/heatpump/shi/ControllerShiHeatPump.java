@@ -26,10 +26,12 @@ public interface ControllerShiHeatPump extends OpenemsComponent {
 				.text("Hot-water setpoint of the heat pump itself, latched while no external influence is active")), //
 		FREE_BATTERY_ENERGY(Doc.of(OpenemsType.INTEGER) //
 				.unit(Unit.WATT_HOURS) //
-				.text("Free battery energy above the night reserve; while positive the battery may support the heat pump")), //
+				.text("Battery energy released to the heat pump (spare energy above the night reserve); "
+						+ "while positive the battery may support the heat pump, 0 when battery support is disabled")), //
 		ESS_SUPPORT_POWER(Doc.of(OpenemsType.INTEGER) //
 				.unit(Unit.WATT) //
-				.text("Battery power currently applied to support the heat pump")), //
+				.text("Battery power actually supporting the heat pump (forced export after ESS clamping grid-side; "
+						+ "best-effort estimate of the battery discharge attributable to the heat pump behind the meter)")), //
 		ESS_FORCED_EXPORT_POWER(Doc.of(OpenemsType.INTEGER) //
 				.unit(Unit.WATT) //
 				.text("Battery export power forced through the grid meter towards the heat pump "

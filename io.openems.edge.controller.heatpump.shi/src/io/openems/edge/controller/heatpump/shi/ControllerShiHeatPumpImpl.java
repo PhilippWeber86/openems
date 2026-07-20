@@ -144,13 +144,16 @@ public class ControllerShiHeatPumpImpl extends AbstractOpenemsComponent
 		// reserve exists, the battery may support the heat pump. The support POWER
 		// is NOT derived from this energy via an assumed duration - it is the real,
 		// currently needed and deliverable power (uncovered heat-pump power, clamped
-		// by the ESS and an optional cap). maxSupportPower is that upper bound; it is
-		// 0 when no energy is free (or support is disabled), MAX_PC_LIMIT for "as
-		// much as the ESS can deliver", or the configured cap.
+		// by the ESS and an optional cap). maxSupportPower is that upper bound: 0
+		// when no energy is free (or support is disabled), otherwise the power the
+		// ESS can actually deliver right now (its allowed discharge power), capped
+		// by the configured maximum. Bounding by the real ESS power up front -
+		// instead of assuming the full soft-limit range - keeps the boost and
+		// run-extension coverage checks honest, so a weak battery cannot make the
+		// heat pump look fully covered and then leave the gap to the grid.
 		var spareEssEnergy = this.calculateSpareEssEnergy();
 		var energyAvailable = this.config.essSupportEnabled() && spareEssEnergy > 0;
-		final var maxSupportPower = !energyAvailable ? 0
-				: this.config.maxBatterySupportPower() > 0 ? this.config.maxBatterySupportPower() : MAX_PC_LIMIT;
+		final var maxSupportPower = !energyAvailable ? 0 : this.deliverableSupportPower();
 
 		this.updateNaturalHotWaterSetpoint();
 
@@ -201,6 +204,23 @@ public class ControllerShiHeatPumpImpl extends AbstractOpenemsComponent
 		this._setFreeBatteryEnergy(energyAvailable ? spareEssEnergy : 0);
 		this._setEssSupportPower(appliedSupport);
 		this._setRunExtensionActive(this.runExtensionActive);
+	}
+
+	/**
+	 * Upper bound of the battery support power: the power the ESS can currently
+	 * deliver (its allowed discharge power), capped by the configured maximum if
+	 * set. Using the real ESS limit here - not the device soft-limit range -
+	 * prevents the coverage checks from treating an unavailable battery power as
+	 * available.
+	 *
+	 * @return deliverable support power in W
+	 * @throws OpenemsNamedException if the ESS component is not available
+	 */
+	private int deliverableSupportPower() throws OpenemsNamedException {
+		ManagedSymmetricEss ess = this.componentManager.getComponent(this.config.ess_id());
+		var deliverable = Math.max(0, ess.getPower().getMaxPower(ess, ALL, ACTIVE));
+		var cap = this.config.maxBatterySupportPower();
+		return cap > 0 ? Math.min(cap, deliverable) : deliverable;
 	}
 
 	/**
@@ -309,8 +329,8 @@ public class ControllerShiHeatPumpImpl extends AbstractOpenemsComponent
 
 	/**
 	 * Optional forecast veto for elevated-mode entry: the prediction must show
-	 * enough surplus (plus allowed battery support) for the duration of a
-	 * compressor cycle. Lenient by design - without a prediction or with missing
+	 * enough PV surplus alone for the duration of a compressor cycle. Lenient by
+	 * design - without a prediction or with missing
 	 * values there is no veto, and it never overrules an active elevated mode.
 	 *
 	 * @param minimumPower effective minimum power for elevated mode in W
@@ -329,9 +349,9 @@ public class ControllerShiHeatPumpImpl extends AbstractOpenemsComponent
 		var consumptions = consumptionPrediction.asArray();
 
 		// The veto requires the PV surplus ALONE to sustain the commit - the battery
-		// is not credited here, because carrying the commit from the battery is
-		// already guaranteed by the commit-energy check. Enabling the veto therefore
-		// means "only boost if the sun itself will sustain it".
+		// is not credited here. Battery support during the run is opportunistic (it
+		// rides out clouds while free energy lasts), so enabling the veto means
+		// "only boost if the sun itself is forecast to sustain the committed cycle".
 		var commitMinutes = Math.max(this.heatPump.getMinRuntime().orElse(0),
 				this.config.minimumSwitchingTime() / 60);
 		// The commit starts mid-quarter: it covers the remainder of the current
@@ -445,27 +465,40 @@ public class ControllerShiHeatPumpImpl extends AbstractOpenemsComponent
 			// deliverable support power and clamped by the ESS below.
 			var supportPower = Math.min(maxSupportPower, heatPumpPower);
 			ManagedSymmetricEss ess = this.componentManager.getComponent(this.config.ess_id());
+			var essActivePower = this.sum.getEssActivePower().orElse(0);
 			var householdDischarge = Math.max(0,
-					this.sum.getGridActivePower().orElse(0) + this.sum.getEssActivePower().orElse(0) - heatPumpPower);
+					this.sum.getGridActivePower().orElse(0) + essActivePower - heatPumpPower);
 			var limit = ess.getPower().fitValueIntoMinMaxPower(this.id(), ess, ALL, ACTIVE,
 					householdDischarge + supportPower);
 			ess.setActivePowerLessOrEquals(limit);
 			this._setEssDischargeLimit(limit);
-			return supportPower;
+			// Here the battery is only given a discharge ALLOWANCE - whether it is
+			// actually used for the heat pump depends on the PV. The actually active
+			// support is therefore the measured battery discharge that exceeds the
+			// household draw, capped at the granted allowance: 0 while the battery is
+			// idle or charging (PV covers), rather than the full allowance. This is a
+			// best-effort estimate from the measured flows, since with PV present the
+			// battery cannot be split exactly between household and heat pump.
+			return Math.max(0, Math.min(supportPower, Math.max(0, essActivePower) - householdDischarge));
 		}
 		case GRID_SIDE_OF_GRID_METER -> {
 			this._setEssDischargeLimit(null);
 			var forcedExportPower = Math.min(maxSupportPower, Math.max(0, heatPumpPower - surplusPower));
-			this._setEssForcedExportPower(forcedExportPower);
 			if (forcedExportPower <= 0) {
+				this._setEssForcedExportPower(0);
 				return 0;
 			}
 			ManagedSymmetricEss ess = this.componentManager.getComponent(this.config.ess_id());
-			var requiredPower = this.sum.getEssActivePower().orElse(0) + this.sum.getGridActivePower().orElse(0)
-					+ forcedExportPower;
-			requiredPower = ess.getPower().fitValueIntoMinMaxPower(this.id(), ess, ALL, ACTIVE, requiredPower);
+			var essAndGrid = this.sum.getEssActivePower().orElse(0) + this.sum.getGridActivePower().orElse(0);
+			var requiredPower = ess.getPower().fitValueIntoMinMaxPower(this.id(), ess, ALL, ACTIVE,
+					essAndGrid + forcedExportPower);
 			ess.setActivePowerGreaterOrEquals(requiredPower);
-			return forcedExportPower;
+			// The forced-export target may be clamped down by the ESS; the actually
+			// forced battery power towards the heat pump is the increment the ESS is
+			// pushed above the present ess+grid flow, not the unclamped request.
+			var actualSupport = Math.max(0, requiredPower - essAndGrid);
+			this._setEssForcedExportPower(actualSupport);
+			return actualSupport;
 		}
 		}
 		return 0;
