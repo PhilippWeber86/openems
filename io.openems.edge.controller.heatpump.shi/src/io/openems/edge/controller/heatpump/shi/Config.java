@@ -5,10 +5,11 @@ import org.osgi.service.metatype.annotations.ObjectClassDefinition;
 
 @ObjectClassDefinition(//
 		name = "Controller SHI Heat Pump", //
-		description = "Runs a SHI heat pump on PV surplus. The heat pump is expected to be connected "
-				+ "grid-side of the grid meter, so the battery never discharges for it by default; "
-				+ "battery support is actively forced only while the forecast guarantees that household "
-				+ "consumption stays covered.")
+		description = "Runs a SHI heat pump preferably on PV surplus while protecting the battery for the "
+				+ "household: battery energy may only serve the heat pump as long as the forecast guarantees "
+				+ "that household consumption stays covered (night reserve). Supports both wiring topologies "
+				+ "via the 'Heat pump position' setting, and extends natural hot-water runs to save "
+				+ "compressor starts.")
 @interface Config {
 
 	@AttributeDefinition(name = "Component-ID", description = "Unique ID of this Component")
