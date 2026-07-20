@@ -867,13 +867,13 @@ class ControllerShiHeatPumpImplTest {
 	}
 
 	@Test
-	void testElevatedModeWithEssBridge() throws Exception {
+	void testNoBridgeBelowMinimumSurplus() throws Exception {
 		var clock = createDummyClock();
 		var componentManager = new DummyComponentManager(clock);
 		var sum = new DummySum();
 		var now = Instant.now(clock);
 
-		// Same forecast as above: night reserve 3000 Wh -> spare power 2000 W
+		// Night reserve 3000 Wh -> spare power 2000 W available
 		var productionValues = new Integer[24];
 		var consumptionValues = new Integer[24];
 		Arrays.fill(productionValues, 0);
@@ -900,24 +900,110 @@ class ControllerShiHeatPumpImplTest {
 						.setEssId("ess0") //
 						.setHeatPumpPosition(HeatPumpPosition.GRID_SIDE_OF_GRID_METER) //
 						.setMinimumSurplusPowerForElevatedMode(2000) //
+						.setMinCloudBufferPower(1000) //
 						.setMinSoc(15) //
 						.setNightReserveBuffer(100) //
 						.setEssSupportDurationMinutes(60) //
 						.build()) //
-				// PV export 1500 W is below the minimum of 2000 W, but battery support
-				// bridges the missing 500 W -> elevated mode with PC limit 2000 W
-				.next(new TestCase("Surplus plus battery bridge reaches minimum: elevated mode") //
+				// PV export 1500 W is below the minimum of 2000 W. There is plenty of
+				// spare battery power (2000 W), but the bridge was removed: the battery
+				// must not push a weak surplus over the threshold -> no elevated mode.
+				.next(new TestCase("Surplus below minimum, no bridge: stays normal") //
 						.input("_sum", Sum.ChannelId.GRID_ACTIVE_POWER, -1500) //
 						.input("_sum", Sum.ChannelId.ESS_DISCHARGE_POWER, 0) //
 						.input("_sum", Sum.ChannelId.ESS_ACTIVE_POWER, 0) //
 						.input("_sum", Sum.ChannelId.ESS_SOC, 65) //
 						.input("_sum", Sum.ChannelId.ESS_CAPACITY, 10_000) //
 						.input("heatPump0", ElectricityMeter.ChannelId.ACTIVE_POWER, 500) //
-						.output("heatPump0", HeatShiHeatPump.ChannelId.HEATING_MODE, 1) //
-						.output("heatPump0", HeatShiHeatPump.ChannelId.PC_LIMIT, 2000) //
-						.output("ess0", ManagedSymmetricEss.ChannelId.SET_ACTIVE_POWER_GREATER_OR_EQUALS, null) //
-						.output(ControllerShiHeatPump.ChannelId.ELEVATED_MODE_ACTIVE, true) //
-						.output(ControllerShiHeatPump.ChannelId.ESS_FORCED_EXPORT_POWER, 0)) //
+						.output("heatPump0", HeatShiHeatPump.ChannelId.HEATING_MODE, 0) //
+						.output(ControllerShiHeatPump.ChannelId.ELEVATED_MODE_ACTIVE, false)) //
+				.deactivate();
+	}
+
+	@Test
+	void testBoostBlockedWithoutCloudBuffer() throws Exception {
+		var clock = createDummyClock();
+		new ControllerTest(new ControllerShiHeatPumpImpl()) //
+				.addReference("cm", new DummyConfigurationAdmin()) //
+				.addReference("componentManager", new DummyComponentManager(clock)) //
+				.addReference("sum", new DummySum()) //
+				.addReference("heatPump", new DummyHeatShiHeatPump("heatPump0")) //
+				.addComponent(new DummyManagedSymmetricEss("ess0") //
+						.setPower(new DummyPower(10_000))) //
+				.activate(MyConfig.create() //
+						.setId("ctrl0") //
+						.setHeatPumpId("heatPump0") //
+						.setEssId("ess0") //
+						.setHeatPumpPosition(HeatPumpPosition.GRID_SIDE_OF_GRID_METER) //
+						.setMinimumSurplusPowerForElevatedMode(2500) //
+						.setMinCloudBufferPower(1000) //
+						.build()) //
+				// Real export well above the minimum, but no prediction -> sparePower 0
+				// -> no cloud buffer -> boost must not start (today's grid-feeding case)
+				.next(new TestCase("Strong export but no cloud buffer: no boost") //
+						.input("_sum", Sum.ChannelId.GRID_ACTIVE_POWER, -4000) //
+						.input("_sum", Sum.ChannelId.ESS_DISCHARGE_POWER, 0) //
+						.input("heatPump0", ElectricityMeter.ChannelId.ACTIVE_POWER, 0) //
+						.output(ControllerShiHeatPump.ChannelId.ELEVATED_MODE_ACTIVE, false)) //
+				.deactivate();
+	}
+
+	@Test
+	void testBoostHeldOnSunAfterBufferDrained() throws Exception {
+		var clock = createDummyClock();
+		var componentManager = new DummyComponentManager(clock);
+		var sum = new DummySum();
+		var now = Instant.now(clock);
+
+		// Night reserve 3000 Wh -> spare power 2000 W at start
+		var productionValues = new Integer[24];
+		var consumptionValues = new Integer[24];
+		Arrays.fill(productionValues, 0);
+		Arrays.fill(consumptionValues, 500);
+		var predictorManager = new DummyPredictorManager(//
+				new DummyPredictor("predictor0", componentManager,
+						Prediction.from(sum, SUM_PRODUCTION_ACTIVE_POWER, now, productionValues),
+						SUM_PRODUCTION_ACTIVE_POWER),
+				new DummyPredictor("predictor1", componentManager,
+						Prediction.from(sum, SUM_CONSUMPTION_ACTIVE_POWER, now, consumptionValues),
+						SUM_CONSUMPTION_ACTIVE_POWER));
+
+		new ControllerTest(new ControllerShiHeatPumpImpl()) //
+				.addReference("cm", new DummyConfigurationAdmin()) //
+				.addReference("componentManager", componentManager) //
+				.addReference("sum", sum) //
+				.addReference("predictorManager", predictorManager) //
+				.addReference("heatPump", new DummyHeatShiHeatPump("heatPump0")) //
+				.addComponent(new DummyManagedSymmetricEss("ess0") //
+						.setPower(new DummyPower(10_000))) //
+				.activate(MyConfig.create() //
+						.setId("ctrl0") //
+						.setHeatPumpId("heatPump0") //
+						.setEssId("ess0") //
+						.setHeatPumpPosition(HeatPumpPosition.GRID_SIDE_OF_GRID_METER) //
+						.setMinimumSurplusPowerForElevatedMode(2500) //
+						.setMinCloudBufferPower(1000) //
+						.setMinSoc(15) //
+						.setNightReserveBuffer(100) //
+						.setEssSupportDurationMinutes(60) //
+						.build()) //
+				// Start: strong export (4000) and cloud buffer present (spare 2000) -> boost
+				.next(new TestCase("Start: strong sun and cloud buffer -> boost") //
+						.input("_sum", Sum.ChannelId.GRID_ACTIVE_POWER, -4000) //
+						.input("_sum", Sum.ChannelId.ESS_DISCHARGE_POWER, 0) //
+						.input("_sum", Sum.ChannelId.ESS_SOC, 65) //
+						.input("_sum", Sum.ChannelId.ESS_CAPACITY, 10_000) //
+						.input("heatPump0", ElectricityMeter.ChannelId.ACTIVE_POWER, 0) //
+						.output(ControllerShiHeatPump.ChannelId.ELEVATED_MODE_ACTIVE, true)) //
+				// Battery now at min SoC -> spare 0, no buffer left, but sun still strong
+				// -> boost must be HELD (buffer only required to start)
+				.next(new TestCase("Buffer drained but sun holds: boost stays") //
+						.input("_sum", Sum.ChannelId.GRID_ACTIVE_POWER, -4000) //
+						.input("_sum", Sum.ChannelId.ESS_DISCHARGE_POWER, 0) //
+						.input("_sum", Sum.ChannelId.ESS_SOC, 15) //
+						.input("_sum", Sum.ChannelId.ESS_CAPACITY, 10_000) //
+						.input("heatPump0", ElectricityMeter.ChannelId.ACTIVE_POWER, 0) //
+						.output(ControllerShiHeatPump.ChannelId.ELEVATED_MODE_ACTIVE, true)) //
 				.deactivate();
 	}
 

@@ -51,6 +51,9 @@ import org.osgi.service.metatype.annotations.ObjectClassDefinition;
 	@AttributeDefinition(name = "ESS support duration", description = "Assumed duration in minutes for battery-supported heat-pump operation; converts spare battery energy into allowed support power.")
 	int essSupportDurationMinutes() default 60;
 
+	@AttributeDefinition(name = "Minimum cloud buffer power", description = "Spare battery power in W that must be available before a boost or run extension may START, so a raised setpoint is never committed without the battery being able to cover a PV dip (cloud). Not required to keep a running boost alive.")
+	int minCloudBufferPower() default 1000;
+
 	@AttributeDefinition(name = "Minimum switching time", description = "Lower bound in seconds between elevated mode changes. The effective hysteresis is the maximum of this value and the compressor cycle limits reported by the heat pump (minimum runtime while elevated, restart lock after leaving).")
 	int minimumSwitchingTime() default 300;
 

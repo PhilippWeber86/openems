@@ -149,23 +149,26 @@ public class ControllerShiHeatPumpImpl extends AbstractOpenemsComponent
 		var sparePower = this.config.essSupportEnabled() && spareEssEnergy > 0
 				? Math.round(spareEssEnergy * 60F / Math.max(1, this.config.essSupportDurationMinutes()))
 				: 0;
-		// Portion of it used to bridge missing surplus for the elevated-mode decision
-		var essSupportPower = Math.max(0, Math.min(minimumPower - surplusPower, sparePower));
 
 		this.updateNaturalHotWaterSetpoint();
 
-		// Elevated mode requires real PV surplus as its base; battery support only
-		// bridges the gap up to the minimum power. Without surplus the heat pump
-		// runs on its own schedule and is passively supported by the battery below.
-		var entryConditions = surplusPower > 0 && surplusPower + essSupportPower >= minimumPower;
-		var boostConfirmed = this.updateBoostConfirmation(entryConditions);
-		var forecastVetoed = !this.elevatedModeActive && entryConditions
+		// Elevated mode requires REAL PV surplus as its base (no battery bridging
+		// of a weak surplus). Starting additionally requires a cloud buffer: enough
+		// spare battery power to cover a PV dip during the committed compressor
+		// cycle. That buffer is only required to START - once elevated, the boost is
+		// held on the surplus alone, so strong sun does not abort just because the
+		// battery buffer has drained.
+		var sunSufficient = surplusPower >= minimumPower;
+		var hasCloudBuffer = sparePower >= this.config.minCloudBufferPower();
+		var startConditions = sunSufficient && hasCloudBuffer;
+		var boostConfirmed = this.updateBoostConfirmation(startConditions);
+		var forecastVetoed = !this.elevatedModeActive && startConditions
 				&& this.isForecastVetoed(minimumPower, sparePower, spareEssEnergy);
 		this._setBoostForecastVeto(forecastVetoed);
 
 		var shouldElevate = this.elevatedModeActive //
-				? entryConditions //
-				: entryConditions && boostConfirmed && !forecastVetoed;
+				? sunSufficient //
+				: startConditions && boostConfirmed && !forecastVetoed;
 		if (this.isHysteresisActive() && shouldElevate != this.elevatedModeActive) {
 			shouldElevate = this.elevatedModeActive;
 		}
@@ -181,7 +184,7 @@ public class ControllerShiHeatPumpImpl extends AbstractOpenemsComponent
 			// during the switching hysteresis a short surplus dip would otherwise
 			// shut down the compressor via a 0 W limit - the SHI documentation
 			// explicitly recommends a switch-off delay for PV-surplus operation
-			this.applyElevatedMode(Math.max(minimumPower, surplusPower + essSupportPower));
+			this.applyElevatedMode(Math.max(minimumPower, surplusPower + sparePower));
 		} else {
 			this.handleRunExtension(surplusPower, sparePower, heatPumpPower);
 			this.applyNormalMode();
@@ -381,7 +384,10 @@ public class ControllerShiHeatPumpImpl extends AbstractOpenemsComponent
 				return; // applyNormalMode releases the hot-water registers
 			}
 		} else {
-			if (!naturalRunActive || !fullyCovered || this.naturalHotWaterSetpoint == null
+			// Starting an extension - like a boost - requires a cloud buffer, so a
+			// raised setpoint is never committed without spare battery to cover a dip
+			if (!naturalRunActive || !fullyCovered || sparePower < this.config.minCloudBufferPower()
+					|| this.naturalHotWaterSetpoint == null
 					|| this.hotWaterSetpointDeciDegree
 							- this.naturalHotWaterSetpoint < this.extensionMinDeltaDeciKelvin) {
 				return;
