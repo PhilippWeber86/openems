@@ -146,14 +146,16 @@ public class ControllerShiHeatPumpImpl extends AbstractOpenemsComponent
 		// currently needed and deliverable power (uncovered heat-pump power, clamped
 		// by the ESS and an optional cap). maxSupportPower is that upper bound: 0
 		// when no energy is free (or support is disabled), otherwise the power the
-		// ESS can actually deliver right now (its allowed discharge power), capped
-		// by the configured maximum. Bounding by the real ESS power up front -
-		// instead of assuming the full soft-limit range - keeps the boost and
-		// run-extension coverage checks honest, so a weak battery cannot make the
-		// heat pump look fully covered and then leave the gap to the grid.
+		// ESS can actually deliver right now MINUS the share already needed for the
+		// household, capped by the configured maximum. Bounding by the real power
+		// left for the heat pump - instead of the full discharge power or the soft-
+		// limit range - keeps the boost and run-extension coverage checks honest, so
+		// a battery already busy serving the household cannot make the heat pump look
+		// fully covered and then leave the gap to the grid.
 		var spareEssEnergy = this.calculateSpareEssEnergy();
 		var energyAvailable = this.config.essSupportEnabled() && spareEssEnergy > 0;
-		final var maxSupportPower = !energyAvailable ? 0 : this.deliverableSupportPower();
+		final var maxSupportPower = !energyAvailable ? 0
+				: this.deliverableSupportPower(gridActivePower, heatPumpPower);
 
 		this.updateNaturalHotWaterSetpoint();
 
@@ -207,18 +209,30 @@ public class ControllerShiHeatPumpImpl extends AbstractOpenemsComponent
 	}
 
 	/**
-	 * Upper bound of the battery support power: the power the ESS can currently
-	 * deliver (its allowed discharge power), capped by the configured maximum if
-	 * set. Using the real ESS limit here - not the device soft-limit range -
-	 * prevents the coverage checks from treating an unavailable battery power as
-	 * available.
+	 * Upper bound of the battery support power available for the heat pump: the
+	 * power the ESS can currently deliver (its allowed discharge power) minus the
+	 * share the battery already needs for the household, capped by the configured
+	 * maximum if set. Subtracting the household share is essential: a battery that
+	 * can discharge 3 kW while the household draws 2 kW has only 1 kW left for the
+	 * heat pump, and the coverage checks must see that 1 kW - not the full 3 kW.
 	 *
-	 * @return deliverable support power in W
+	 * @param gridActivePower current grid power in W (import positive)
+	 * @param heatPumpPower   current heat pump consumption in W
+	 * @return deliverable support power for the heat pump in W
 	 * @throws OpenemsNamedException if the ESS component is not available
 	 */
-	private int deliverableSupportPower() throws OpenemsNamedException {
+	private int deliverableSupportPower(int gridActivePower, int heatPumpPower) throws OpenemsNamedException {
 		ManagedSymmetricEss ess = this.componentManager.getComponent(this.config.ess_id());
-		var deliverable = Math.max(0, ess.getPower().getMaxPower(ess, ALL, ACTIVE));
+		var essActivePower = this.sum.getEssActivePower().orElse(0);
+		// Power the battery currently discharges for the household (its share),
+		// which must be reserved before offering the remainder to the heat pump.
+		// Behind the meter the heat pump is part of the measurement, so it is
+		// removed; grid-side it is invisible and only the household segment counts.
+		var householdReserved = switch (this.config.heatPumpPosition()) {
+		case BEHIND_GRID_METER -> Math.max(0, gridActivePower + essActivePower - heatPumpPower);
+		case GRID_SIDE_OF_GRID_METER -> Math.max(0, gridActivePower + essActivePower);
+		};
+		var deliverable = Math.max(0, ess.getPower().getMaxPower(ess, ALL, ACTIVE) - householdReserved);
 		var cap = this.config.maxBatterySupportPower();
 		return cap > 0 ? Math.min(cap, deliverable) : deliverable;
 	}

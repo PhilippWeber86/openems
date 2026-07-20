@@ -789,6 +789,51 @@ class ControllerShiHeatPumpImplTest {
 	}
 
 	@Test
+	void testHouseholdShareReservedFromSupport() throws Exception {
+		var clock = createDummyClock();
+		var cm = new DummyComponentManager(clock);
+		var sum = new DummySum();
+		new ControllerTest(new ControllerShiHeatPumpImpl()) //
+				.addReference("cm", new DummyConfigurationAdmin()) //
+				.addReference("componentManager", cm) //
+				.addReference("sum", sum) //
+				.addReference("predictorManager", sunnyPredictor(cm, sum, Instant.now(clock))) //
+				.addReference("heatPump", new DummyHeatShiHeatPump("heatPump0")) //
+				// The ESS can discharge 3 kW in total.
+				.addComponent(new DummyManagedSymmetricEss("ess0") //
+						.setPower(new DummyPower(3000))) //
+				.activate(MyConfig.create() //
+						.setId("ctrl0") //
+						.setHeatPumpId("heatPump0") //
+						.setEssId("ess0") //
+						.setHeatPumpPosition(HeatPumpPosition.GRID_SIDE_OF_GRID_METER) //
+						.setMinimumSurplusPowerForElevatedMode(5000) //
+						.build()) //
+				// The household already draws 2 kW from the battery (ess discharge 2000 W,
+				// grid 0, no PV surplus). Of the 3 kW the ESS can deliver, only 1 kW is
+				// left for the heat pump. A natural 2500 W hot-water run is therefore NOT
+				// fully covered (0 surplus + 1 kW < 2500 W) -> no run extension; and the
+				// forced export is limited to the remaining 1 kW. With the household share
+				// ignored, the coverage check would wrongly assume 3 kW and start the
+				// extension, then draw the shortfall from the grid.
+				.next(new TestCase("Household needs 2 kW of a 3 kW battery: only 1 kW supports the heat pump") //
+						.input("_sum", Sum.ChannelId.GRID_ACTIVE_POWER, 0) //
+						.input("_sum", Sum.ChannelId.ESS_DISCHARGE_POWER, 2000) //
+						.input("_sum", Sum.ChannelId.ESS_ACTIVE_POWER, 2000) //
+						.input("_sum", Sum.ChannelId.ESS_SOC, 65) //
+						.input("_sum", Sum.ChannelId.ESS_CAPACITY, 10_000) //
+						.input("heatPump0", ElectricityMeter.ChannelId.ACTIVE_POWER, 2500) //
+						.input("heatPump0", HeatShiHeatPump.ChannelId.OPERATING_MODE_STATUS, 1) //
+						.input("heatPump0", HeatShiHeatPump.ChannelId.HOT_WATER_STATUS, 3) //
+						.input("heatPump0", HeatShiHeatPump.ChannelId.HOT_WATER_MODE, 0) //
+						.input("heatPump0", HeatShiHeatPump.ChannelId.HOT_WATER_ACTIVE_SETPOINT, 480) //
+						.output(ControllerShiHeatPump.ChannelId.ELEVATED_MODE_ACTIVE, false) //
+						.output(ControllerShiHeatPump.ChannelId.RUN_EXTENSION_ACTIVE, false) //
+						.output(ControllerShiHeatPump.ChannelId.ESS_FORCED_EXPORT_POWER, 1000)) //
+				.deactivate();
+	}
+
+	@Test
 	void testPredictionsFromUnmanagedChannels() throws Exception {
 		var clock = createDummyClock();
 		var cm = new DummyComponentManager(clock);
