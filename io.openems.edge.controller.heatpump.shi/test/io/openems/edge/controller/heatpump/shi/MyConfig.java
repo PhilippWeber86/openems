@@ -12,8 +12,8 @@ public class MyConfig extends AbstractComponentConfig implements Config {
 		private String essId = "ess0";
 		private HeatPumpPosition heatPumpPosition = HeatPumpPosition.BEHIND_GRID_METER;
 		private int minimumSurplusPowerForElevatedMode = 2500;
-		private int heatingSetpoint = 550;
-		private int hotWaterSetpoint = 550;
+		private double heatingSetpoint = 55.0;
+		private double hotWaterSetpoint = 55.0;
 		private boolean essSupportEnabled = true;
 		private int minSoc = 15;
 		private int nightReserveBuffer = 120;
@@ -22,7 +22,7 @@ public class MyConfig extends AbstractComponentConfig implements Config {
 		private int boostConfirmationSeconds = 0;
 		private boolean forecastVetoEnabled = false;
 		private boolean runExtensionEnabled = true;
-		private int extensionMinTemperatureDelta = 30;
+		private double extensionMinTemperatureDelta = 3.0;
 
 		private Builder() {
 		}
@@ -52,12 +52,12 @@ public class MyConfig extends AbstractComponentConfig implements Config {
 			return this;
 		}
 
-		public Builder setHeatingSetpoint(int value) {
+		public Builder setHeatingSetpoint(double value) {
 			this.heatingSetpoint = value;
 			return this;
 		}
 
-		public Builder setHotWaterSetpoint(int value) {
+		public Builder setHotWaterSetpoint(double value) {
 			this.hotWaterSetpoint = value;
 			return this;
 		}
@@ -102,7 +102,7 @@ public class MyConfig extends AbstractComponentConfig implements Config {
 			return this;
 		}
 
-		public Builder setExtensionMinTemperatureDelta(int value) {
+		public Builder setExtensionMinTemperatureDelta(double value) {
 			this.extensionMinTemperatureDelta = value;
 			return this;
 		}
@@ -149,12 +149,12 @@ public class MyConfig extends AbstractComponentConfig implements Config {
 	}
 
 	@Override
-	public int heatingSetpoint() {
+	public double heatingSetpoint() {
 		return this.builder.heatingSetpoint;
 	}
 
 	@Override
-	public int hotWaterSetpoint() {
+	public double hotWaterSetpoint() {
 		return this.builder.hotWaterSetpoint;
 	}
 
@@ -199,7 +199,7 @@ public class MyConfig extends AbstractComponentConfig implements Config {
 	}
 
 	@Override
-	public int extensionMinTemperatureDelta() {
+	public double extensionMinTemperatureDelta() {
 		return this.builder.extensionMinTemperatureDelta;
 	}
 

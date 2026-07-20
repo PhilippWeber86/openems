@@ -70,6 +70,10 @@ public class ControllerShiHeatPumpImpl extends AbstractOpenemsComponent
 	private volatile HeatShiHeatPump heatPump;
 
 	private Config config;
+	// Config temperatures in °C, converted once to the SHI-native 0.1 °C/K
+	private int heatingSetpointDeciDegree;
+	private int hotWaterSetpointDeciDegree;
+	private int extensionMinDeltaDeciKelvin;
 	private Instant lastModeChange = Instant.MIN;
 	private boolean elevatedModeActive = false;
 	private Instant entryConditionsSince = null;
@@ -98,6 +102,9 @@ public class ControllerShiHeatPumpImpl extends AbstractOpenemsComponent
 
 	private void updateConfig(Config config) {
 		this.config = config;
+		this.heatingSetpointDeciDegree = (int) Math.round(config.heatingSetpoint() * 10);
+		this.hotWaterSetpointDeciDegree = (int) Math.round(config.hotWaterSetpoint() * 10);
+		this.extensionMinDeltaDeciKelvin = (int) Math.round(config.extensionMinTemperatureDelta() * 10);
 		OpenemsComponent.updateReferenceFilter(this.cm, this.servicePid(), "heatPump", config.heatPump_id());
 	}
 
@@ -225,11 +232,11 @@ public class ControllerShiHeatPumpImpl extends AbstractOpenemsComponent
 		// heating in summer)
 		if (this.heatPump.getHeatingStatus().orElse(0) > 0) {
 			this.heatPump.setHeatingMode(HeatShiHeatPump.MODE_SETPOINT);
-			this.heatPump.setHeatingSetpoint(this.config.heatingSetpoint());
+			this.heatPump.setHeatingSetpoint(this.heatingSetpointDeciDegree);
 		}
 		if (this.heatPump.getHotWaterStatus().orElse(0) > 0) {
 			this.heatPump.setHotWaterMode(HeatShiHeatPump.MODE_SETPOINT);
-			this.heatPump.setHotWaterSetpoint(this.config.hotWaterSetpoint());
+			this.heatPump.setHotWaterSetpoint(this.hotWaterSetpointDeciDegree);
 		}
 		this.heatPump.setLpcMode(HeatShiHeatPump.LPC_MODE_SOFT);
 		this.heatPump.setPcLimit(Math.max(0, Math.min(MAX_PC_LIMIT, availablePower)));
@@ -375,14 +382,14 @@ public class ControllerShiHeatPumpImpl extends AbstractOpenemsComponent
 			}
 		} else {
 			if (!naturalRunActive || !fullyCovered || this.naturalHotWaterSetpoint == null
-					|| this.config.hotWaterSetpoint()
-							- this.naturalHotWaterSetpoint < this.config.extensionMinTemperatureDelta()) {
+					|| this.hotWaterSetpointDeciDegree
+							- this.naturalHotWaterSetpoint < this.extensionMinDeltaDeciKelvin) {
 				return;
 			}
 			this.runExtensionActive = true;
 		}
 		this.heatPump.setHotWaterMode(HeatShiHeatPump.MODE_SETPOINT);
-		this.heatPump.setHotWaterSetpoint(this.config.hotWaterSetpoint());
+		this.heatPump.setHotWaterSetpoint(this.hotWaterSetpointDeciDegree);
 		// Soft-limit the heat pump to the covered power: the raised setpoint
 		// invites a power increase, which must not draw grid power before the
 		// coverage check of the next cycle would end the extension
