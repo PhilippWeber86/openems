@@ -176,6 +176,12 @@ public class ControllerShiHeatPumpImpl extends AbstractOpenemsComponent
 		this.tryRelease(() -> this.heatPump.setHotWaterMode(HeatShiHeatPump.MODE_NONE));
 		this.tryRelease(() -> this.heatPump.setLpcMode(HeatShiHeatPump.LPC_MODE_NONE));
 		this.tryRelease(() -> this.heatPump.setPcLimit(0));
+		// Releasing an active run extension also arms the re-entry lock, so a release
+		// caused by e.g. a brief measurement dropout cannot let the extension restart
+		// immediately once the measurements return (flicker would re-enable toggling).
+		if (this.runExtensionActive) {
+			this.runExtensionEndedAt = Instant.now(this.componentManager.getClock());
+		}
 		this.elevatedModeActive = false;
 		this.runExtensionActive = false;
 	}
@@ -226,9 +232,11 @@ public class ControllerShiHeatPumpImpl extends AbstractOpenemsComponent
 			this.releaseHeatPump();
 			this.entryConditionsSince = null;
 			this._setBoostPending(false);
+			this._setBoostForecastVeto(false);
 			this._setEssForcedExportPower(null);
 			this._setEssDischargeLimit(null);
 			this._setElevatedModeActive(false);
+			this._setRunExtensionActive(false);
 			this._setFreeBatteryEnergy(0);
 			this._setEssSupportPower(0);
 			return;

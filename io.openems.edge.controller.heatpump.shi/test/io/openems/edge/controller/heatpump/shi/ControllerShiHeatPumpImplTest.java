@@ -1073,6 +1073,58 @@ class ControllerShiHeatPumpImplTest {
 	}
 
 	@Test
+	void testMeasurementDropoutDuringExtensionArmsReentryLock() throws Exception {
+		var clock = createDummyClock();
+		var cm = new DummyComponentManager(clock);
+		var sum = new DummySum();
+		new ControllerTest(new ControllerShiHeatPumpImpl()) //
+				.addReference("cm", new DummyConfigurationAdmin()) //
+				.addReference("componentManager", cm) //
+				.addReference("sum", sum) //
+				.addReference("predictorManager", sunnyPredictor(cm, sum, Instant.now(clock))) //
+				.addReference("heatPump", new DummyHeatShiHeatPump("heatPump0")) //
+				.addComponent(new DummyManagedSymmetricEss("ess0") //
+						.setPower(new DummyPower(500))) //
+				.activate(MyConfig.create() //
+						.setId("ctrl0") //
+						.setHeatPumpId("heatPump0") //
+						.setEssId("ess0") //
+						.setHeatPumpPosition(HeatPumpPosition.GRID_SIDE_OF_GRID_METER) //
+						.setMinimumSurplusPowerForElevatedMode(5000) //
+						.build()) //
+				.next(new TestCase("Covered with margin: extension starts") //
+						.input("_sum", Sum.ChannelId.GRID_ACTIVE_POWER, -2500) //
+						.input("_sum", Sum.ChannelId.ESS_DISCHARGE_POWER, 0) //
+						.input("_sum", Sum.ChannelId.ESS_ACTIVE_POWER, 0) //
+						.input("_sum", Sum.ChannelId.ESS_SOC, 65) //
+						.input("_sum", Sum.ChannelId.ESS_CAPACITY, 10_000) //
+						.input("heatPump0", ElectricityMeter.ChannelId.ACTIVE_POWER, 2500) //
+						.input("heatPump0", HeatShiHeatPump.ChannelId.OPERATING_MODE_STATUS, 1) //
+						.input("heatPump0", HeatShiHeatPump.ChannelId.HOT_WATER_STATUS, 3) //
+						.input("heatPump0", HeatShiHeatPump.ChannelId.HOT_WATER_MODE, 0) //
+						.input("heatPump0", HeatShiHeatPump.ChannelId.HOT_WATER_ACTIVE_SETPOINT, 480) //
+						.output(ControllerShiHeatPump.ChannelId.RUN_EXTENSION_ACTIVE, true)) //
+				// Grid measurement drops out: fail-safe releases the extension and the
+				// diagnostic channel must read false immediately.
+				.next(new TestCase("Grid measurement lost: extension released, channel false") //
+						.input("_sum", Sum.ChannelId.GRID_ACTIVE_POWER, null) //
+						.output(ControllerShiHeatPump.ChannelId.POWER_MEASUREMENT_UNAVAILABLE, true) //
+						.output(ControllerShiHeatPump.ChannelId.RUN_EXTENSION_ACTIVE, false)) //
+				// Measurement returns with good coverage, but the re-entry lock (armed by
+				// the release) prevents an immediate restart - so flicker cannot toggle.
+				.next(new TestCase("Measurement back but re-entry locked: no restart") //
+						.input("_sum", Sum.ChannelId.GRID_ACTIVE_POWER, -2500) //
+						.output(ControllerShiHeatPump.ChannelId.POWER_MEASUREMENT_UNAVAILABLE, false) //
+						.output(ControllerShiHeatPump.ChannelId.RUN_EXTENSION_ACTIVE, false)) //
+				// After the re-entry lock elapses, the extension may start again.
+				.next(new TestCase("Re-entry lock elapsed: extension restarts") //
+						.timeleap(clock, 6, ChronoUnit.MINUTES) //
+						.input("_sum", Sum.ChannelId.GRID_ACTIVE_POWER, -2500) //
+						.output(ControllerShiHeatPump.ChannelId.RUN_EXTENSION_ACTIVE, true)) //
+				.deactivate();
+	}
+
+	@Test
 	void testShortForecastDisablesSupport() throws Exception {
 		var clock = createDummyClock();
 		var cm = new DummyComponentManager(clock);
