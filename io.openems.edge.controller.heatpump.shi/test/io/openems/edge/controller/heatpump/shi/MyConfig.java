@@ -15,6 +15,8 @@ public class MyConfig extends AbstractComponentConfig implements Config {
 		private double heatingSetpoint = 55.0;
 		private double hotWaterSetpoint = 55.0;
 		private boolean essSupportEnabled = true;
+		private BatterySupportMode batterySupportMode = BatterySupportMode.OFFENSIVE;
+		private NightReserveMode nightReserveMode = NightReserveMode.MAX_DEFICIT;
 		private int minSoc = 15;
 		private int nightReserveBuffer = 120;
 		private int maxBatterySupportPower = 0;
@@ -64,6 +66,16 @@ public class MyConfig extends AbstractComponentConfig implements Config {
 
 		public Builder setEssSupportEnabled(boolean value) {
 			this.essSupportEnabled = value;
+			return this;
+		}
+
+		public Builder setBatterySupportMode(BatterySupportMode value) {
+			this.batterySupportMode = value;
+			return this;
+		}
+
+		public Builder setNightReserveMode(NightReserveMode value) {
+			this.nightReserveMode = value;
 			return this;
 		}
 
@@ -161,6 +173,16 @@ public class MyConfig extends AbstractComponentConfig implements Config {
 	@Override
 	public boolean essSupportEnabled() {
 		return this.builder.essSupportEnabled;
+	}
+
+	@Override
+	public BatterySupportMode batterySupportMode() {
+		return this.builder.batterySupportMode;
+	}
+
+	@Override
+	public NightReserveMode nightReserveMode() {
+		return this.builder.nightReserveMode;
 	}
 
 	@Override

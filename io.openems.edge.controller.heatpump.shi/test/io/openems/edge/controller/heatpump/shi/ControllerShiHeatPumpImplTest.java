@@ -79,6 +79,28 @@ class ControllerShiHeatPumpImplTest {
 		return flatPredictor(cm, sum, now, 5000, 500);
 	}
 
+	/**
+	 * Morning-recovery forecast: 12 h of PV (2000 W) then none, low daytime load,
+	 * a 6 h evening block (1200 W) and a quiet late night (200 W). The overnight
+	 * deficit exceeds a low morning SoC, so MAX_DEFICIT reserves everything, while
+	 * the daytime PV refills the battery, so SOC_TRAJECTORY frees the morning
+	 * energy.
+	 */
+	private static DummyPredictorManager morningRecoveryPredictor(DummyComponentManager cm, DummySum sum, Instant now)
+			throws OpenemsNamedException {
+		var prod = new Integer[96];
+		var cons = new Integer[96];
+		for (var i = 0; i < 96; i++) {
+			prod[i] = i < 48 ? 2000 : 0;
+			cons[i] = i < 48 ? 500 : i < 72 ? 1200 : 200;
+		}
+		return new DummyPredictorManager(//
+				new DummyPredictor("predictor0", cm, Prediction.from(sum, SUM_PRODUCTION_ACTIVE_POWER, now, prod),
+						SUM_PRODUCTION_ACTIVE_POWER),
+				new DummyPredictor("predictor1", cm, Prediction.from(sum, SUM_CONSUMPTION_ACTIVE_POWER, now, cons),
+						SUM_CONSUMPTION_ACTIVE_POWER));
+	}
+
 	@Test
 	void testElevatedModeOnGridExportWithHysteresis() throws Exception {
 		var clock = createDummyClock();
@@ -1213,6 +1235,150 @@ class ControllerShiHeatPumpImplTest {
 						.output(ControllerShiHeatPump.ChannelId.NO_PREDICTION_AVAILABLE, true) //
 						.output(ControllerShiHeatPump.ChannelId.FREE_BATTERY_ENERGY, 0) //
 						.output(ControllerShiHeatPump.ChannelId.ESS_FORCED_EXPORT_POWER, 0)) //
+				.deactivate();
+	}
+
+	@Test
+	void testNightReserveMaxDeficitBlocksMorningEnergy() throws Exception {
+		var clock = createDummyClock();
+		var cm = new DummyComponentManager(clock);
+		var sum = new DummySum();
+		new ControllerTest(new ControllerShiHeatPumpImpl()) //
+				.addReference("cm", new DummyConfigurationAdmin()) //
+				.addReference("componentManager", cm) //
+				.addReference("sum", sum) //
+				.addReference("predictorManager", morningRecoveryPredictor(cm, sum, Instant.now(clock))) //
+				.addReference("heatPump", new DummyHeatShiHeatPump("heatPump0")) //
+				.addComponent(new DummyManagedSymmetricEss("ess0") //
+						.setPower(new DummyPower(10_000))) //
+				.activate(MyConfig.create() //
+						.setId("ctrl0") //
+						.setHeatPumpId("heatPump0") //
+						.setEssId("ess0") //
+						.setHeatPumpPosition(HeatPumpPosition.GRID_SIDE_OF_GRID_METER) //
+						.setMinSoc(15) //
+						.setNightReserveMode(NightReserveMode.MAX_DEFICIT) //
+						.build()) //
+				// Low morning SoC (25 % -> 1000 Wh usable). The overnight deficit is far
+				// larger, so MAX_DEFICIT reserves everything -> nothing free.
+				.next(new TestCase("Max-deficit reserve blocks the morning") //
+						.input("_sum", Sum.ChannelId.GRID_ACTIVE_POWER, 0) //
+						.input("_sum", Sum.ChannelId.ESS_DISCHARGE_POWER, 0) //
+						.input("_sum", Sum.ChannelId.ESS_ACTIVE_POWER, 0) //
+						.input("_sum", Sum.ChannelId.ESS_SOC, 25) //
+						.input("_sum", Sum.ChannelId.ESS_CAPACITY, 10_000) //
+						.input("heatPump0", ElectricityMeter.ChannelId.ACTIVE_POWER, 0) //
+						.output(ControllerShiHeatPump.ChannelId.FREE_BATTERY_ENERGY, 0)) //
+				.deactivate();
+	}
+
+	@Test
+	void testNightReserveTrajectoryFreesMorningEnergy() throws Exception {
+		var clock = createDummyClock();
+		var cm = new DummyComponentManager(clock);
+		var sum = new DummySum();
+		new ControllerTest(new ControllerShiHeatPumpImpl()) //
+				.addReference("cm", new DummyConfigurationAdmin()) //
+				.addReference("componentManager", cm) //
+				.addReference("sum", sum) //
+				.addReference("predictorManager", morningRecoveryPredictor(cm, sum, Instant.now(clock))) //
+				.addReference("heatPump", new DummyHeatShiHeatPump("heatPump0")) //
+				.addComponent(new DummyManagedSymmetricEss("ess0") //
+						.setPower(new DummyPower(10_000))) //
+				.activate(MyConfig.create() //
+						.setId("ctrl0") //
+						.setHeatPumpId("heatPump0") //
+						.setEssId("ess0") //
+						.setHeatPumpPosition(HeatPumpPosition.GRID_SIDE_OF_GRID_METER) //
+						.setMinSoc(15) //
+						.setNightReserveMode(NightReserveMode.SOC_TRAJECTORY) //
+						.build()) //
+				// Same forecast and SoC as above: the daytime PV refills the battery
+				// before the evening, so the trajectory frees the full 1000 Wh now.
+				.next(new TestCase("Trajectory reserve frees the morning") //
+						.input("_sum", Sum.ChannelId.GRID_ACTIVE_POWER, 0) //
+						.input("_sum", Sum.ChannelId.ESS_DISCHARGE_POWER, 0) //
+						.input("_sum", Sum.ChannelId.ESS_ACTIVE_POWER, 0) //
+						.input("_sum", Sum.ChannelId.ESS_SOC, 25) //
+						.input("_sum", Sum.ChannelId.ESS_CAPACITY, 10_000) //
+						.input("heatPump0", ElectricityMeter.ChannelId.ACTIVE_POWER, 0) //
+						.output(ControllerShiHeatPump.ChannelId.FREE_BATTERY_ENERGY, 1000)) //
+				.deactivate();
+	}
+
+	@Test
+	void testCloudBufferBoostFollowsSunNotBattery() throws Exception {
+		var clock = createDummyClock();
+		var cm = new DummyComponentManager(clock);
+		var sum = new DummySum();
+		new ControllerTest(new ControllerShiHeatPumpImpl()) //
+				.addReference("cm", new DummyConfigurationAdmin()) //
+				.addReference("componentManager", cm) //
+				.addReference("sum", sum) //
+				.addReference("predictorManager", sunnyPredictor(cm, sum, Instant.now(clock))) //
+				.addReference("heatPump", new DummyHeatShiHeatPump("heatPump0")) //
+				.addComponent(new DummyManagedSymmetricEss("ess0") //
+						.setPower(new DummyPower(10_000))) //
+				.activate(MyConfig.create() //
+						.setId("ctrl0") //
+						.setHeatPumpId("heatPump0") //
+						.setEssId("ess0") //
+						.setHeatPumpPosition(HeatPumpPosition.GRID_SIDE_OF_GRID_METER) //
+						.setBatterySupportMode(BatterySupportMode.CLOUD_BUFFER) //
+						.build()) //
+				// 3000 W export, plenty of free battery energy. In CLOUD_BUFFER the boost
+				// soft limit is the surplus ALONE (3000 W), not surplus + battery - the
+				// heat pump follows the sun and is not driven harder by the battery.
+				.next(new TestCase("Cloud-buffer boost limits to the surplus") //
+						.input("_sum", Sum.ChannelId.GRID_ACTIVE_POWER, -3000) //
+						.input("_sum", Sum.ChannelId.ESS_DISCHARGE_POWER, 0) //
+						.input("_sum", Sum.ChannelId.ESS_ACTIVE_POWER, 0) //
+						.input("_sum", Sum.ChannelId.ESS_SOC, 65) //
+						.input("_sum", Sum.ChannelId.ESS_CAPACITY, 10_000) //
+						.input("heatPump0", ElectricityMeter.ChannelId.ACTIVE_POWER, 0) //
+						.output("heatPump0", HeatShiHeatPump.ChannelId.PC_LIMIT, 3000) //
+						.output(ControllerShiHeatPump.ChannelId.ELEVATED_MODE_ACTIVE, true)) //
+				.deactivate();
+	}
+
+	@Test
+	void testCloudBufferFundsNaturalRunButNoExtension() throws Exception {
+		var clock = createDummyClock();
+		var cm = new DummyComponentManager(clock);
+		var sum = new DummySum();
+		new ControllerTest(new ControllerShiHeatPumpImpl()) //
+				.addReference("cm", new DummyConfigurationAdmin()) //
+				.addReference("componentManager", cm) //
+				.addReference("sum", sum) //
+				.addReference("predictorManager", sunnyPredictor(cm, sum, Instant.now(clock))) //
+				.addReference("heatPump", new DummyHeatShiHeatPump("heatPump0")) //
+				.addComponent(new DummyManagedSymmetricEss("ess0") //
+						.setPower(new DummyPower(10_000))) //
+				.activate(MyConfig.create() //
+						.setId("ctrl0") //
+						.setHeatPumpId("heatPump0") //
+						.setEssId("ess0") //
+						.setHeatPumpPosition(HeatPumpPosition.GRID_SIDE_OF_GRID_METER) //
+						.setBatterySupportMode(BatterySupportMode.CLOUD_BUFFER) //
+						.setMinimumSurplusPowerForElevatedMode(5000) //
+						.build()) //
+				// Natural 2000 W hot-water run, no PV. In CLOUD_BUFFER the battery is not
+				// invited to drive the extension (no surplus -> no extension), but the
+				// passive support still pays for the run the heat pump does anyway.
+				.next(new TestCase("Cloud-buffer: run funded, not extended") //
+						.input("_sum", Sum.ChannelId.GRID_ACTIVE_POWER, 0) //
+						.input("_sum", Sum.ChannelId.ESS_DISCHARGE_POWER, 0) //
+						.input("_sum", Sum.ChannelId.ESS_ACTIVE_POWER, 0) //
+						.input("_sum", Sum.ChannelId.ESS_SOC, 65) //
+						.input("_sum", Sum.ChannelId.ESS_CAPACITY, 10_000) //
+						.input("heatPump0", ElectricityMeter.ChannelId.ACTIVE_POWER, 2000) //
+						.input("heatPump0", HeatShiHeatPump.ChannelId.OPERATING_MODE_STATUS, 1) //
+						.input("heatPump0", HeatShiHeatPump.ChannelId.HOT_WATER_STATUS, 3) //
+						.input("heatPump0", HeatShiHeatPump.ChannelId.HOT_WATER_MODE, 0) //
+						.input("heatPump0", HeatShiHeatPump.ChannelId.HOT_WATER_ACTIVE_SETPOINT, 480) //
+						.output(ControllerShiHeatPump.ChannelId.ELEVATED_MODE_ACTIVE, false) //
+						.output(ControllerShiHeatPump.ChannelId.RUN_EXTENSION_ACTIVE, false) //
+						.output(ControllerShiHeatPump.ChannelId.ESS_FORCED_EXPORT_POWER, 2000)) //
 				.deactivate();
 	}
 

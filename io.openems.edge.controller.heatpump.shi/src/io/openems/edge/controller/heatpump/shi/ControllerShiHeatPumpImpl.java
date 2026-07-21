@@ -278,6 +278,14 @@ public class ControllerShiHeatPumpImpl extends AbstractOpenemsComponent
 		var energyAvailable = this.config.essSupportEnabled() && spareEssEnergy > 0;
 		final var maxSupportPower = !energyAvailable ? 0
 				: this.deliverableSupportPower(gridActivePower, heatPumpPower);
+		// Battery power the heat pump may be actively DRIVEN with (boost soft limit,
+		// run-extension coverage): the full deliverable support in OFFENSIVE mode, 0
+		// in CLOUD_BUFFER mode where the heat pump follows the PV surplus alone. The
+		// passive support below always uses maxSupportPower, so a heat pump running
+		// on its own is still paid from the battery in both modes.
+		final var invitedSupportPower = this.config.batterySupportMode() == BatterySupportMode.OFFENSIVE
+				? maxSupportPower
+				: 0;
 
 		this.updateNaturalHotWaterSetpoint();
 
@@ -314,9 +322,9 @@ public class ControllerShiHeatPumpImpl extends AbstractOpenemsComponent
 			// during the switching hysteresis a short surplus dip would otherwise
 			// shut down the compressor via a 0 W limit - the SHI documentation
 			// explicitly recommends a switch-off delay for PV-surplus operation
-			this.applyElevatedMode(Math.max(minimumPower, surplusPower + maxSupportPower));
+			this.applyElevatedMode(Math.max(minimumPower, surplusPower + invitedSupportPower));
 		} else {
-			this.handleRunExtension(surplusPower, maxSupportPower, heatPumpPower);
+			this.handleRunExtension(surplusPower, invitedSupportPower, heatPumpPower);
 			this.applyNormalMode();
 		}
 		var appliedSupport = this.applyEssSupport(maxSupportPower, surplusPower, heatPumpPower);
@@ -525,20 +533,21 @@ public class ControllerShiHeatPumpImpl extends AbstractOpenemsComponent
 	 * a margin) plus a re-entry lock (after release, re-entry is blocked for the
 	 * minimum switching time) - not by holding the setpoint elevation.
 	 *
-	 * @param surplusPower    current natural PV surplus in W
-	 * @param maxSupportPower upper bound of the battery support power in W (0 if no
-	 *                        free energy)
-	 * @param heatPumpPower   current heat pump consumption in W
+	 * @param surplusPower        current natural PV surplus in W
+	 * @param invitedSupportPower battery power the heat pump may be driven with in W
+	 *                            (0 in CLOUD_BUFFER mode, so the extension then only
+	 *                            runs when the sun alone covers it)
+	 * @param heatPumpPower       current heat pump consumption in W
 	 * @throws OpenemsNamedException on error
 	 */
-	private void handleRunExtension(int surplusPower, int maxSupportPower, int heatPumpPower)
+	private void handleRunExtension(int surplusPower, int invitedSupportPower, int heatPumpPower)
 			throws OpenemsNamedException {
 		if (!this.config.runExtensionEnabled()) {
 			this.runExtensionActive = false;
 			return;
 		}
 		var now = Instant.now(this.componentManager.getClock());
-		var coverage = surplusPower + maxSupportPower;
+		var coverage = surplusPower + invitedSupportPower;
 		var naturalRunActive = this.heatPump.getOperatingModeStatus()
 				.orElse(-1) == HeatShiHeatPump.OPERATING_MODE_HOT_WATER
 				&& this.heatPump.getHotWaterStatus().orElse(0) == HeatShiHeatPump.STATUS_ACTIVE;
@@ -703,8 +712,17 @@ public class ControllerShiHeatPumpImpl extends AbstractOpenemsComponent
 						new ChannelAddress(this.heatPump.id(), ElectricityMeter.ChannelId.ACTIVE_POWER.id()))
 				: Prediction.EMPTY_PREDICTION;
 
-		var reserveEnergy = Math.round(this.calculateNightReserveEnergy(productionPrediction, consumptionPrediction,
-				heatPumpPrediction) * this.config.nightReserveBuffer() / 100F);
+		var capacityAboveMin = Math.round(essCapacity * (100 - this.config.minSoc()) / 100F);
+		var flows = this.quarterlyBatteryFlows(productionPrediction, consumptionPrediction, heatPumpPrediction);
+		// The raw reserve is the battery energy that must be kept for the household.
+		// MAX_DEFICIT reserves the largest cumulative deficit now; SOC_TRAJECTORY
+		// credits the daytime recharge and reserves only what the forward SoC
+		// trajectory cannot spare.
+		var rawReserve = switch (this.config.nightReserveMode()) {
+		case MAX_DEFICIT -> maxCumulativeDeficit(flows);
+		case SOC_TRAJECTORY -> usableEnergy - trajectoryFreeEnergy(usableEnergy, capacityAboveMin, flows);
+		};
+		var reserveEnergy = Math.round(rawReserve * this.config.nightReserveBuffer() / 100F);
 		this._setNightReserveEnergy(reserveEnergy);
 		return Math.max(0, usableEnergy - reserveEnergy);
 	}
@@ -740,26 +758,24 @@ public class ControllerShiHeatPumpImpl extends AbstractOpenemsComponent
 	}
 
 	/**
-	 * Calculates the maximum cumulative energy deficit (household consumption
-	 * above production) in Wh over the prediction horizon. Interim surplus reduces
-	 * the running deficit, so this reflects the battery energy needed to keep the
-	 * household covered until PV recharges the battery again.
+	 * Builds the battery net charge per quarter (Wh, positive = charging) over the
+	 * consumption forecast horizon: {@code production - household load}, where the
+	 * household load is the consumption minus the heat-pump prediction (behind the
+	 * meter). Aligned by TIME, not by array index - the dense value arrays shift
+	 * when a series has an interior gap, so production and consumption would not
+	 * line up per index. Production and heat-pump values are looked up by the same
+	 * quarter and default to 0 W where missing (conservative). The first quarter
+	 * counts only its remaining fraction.
 	 *
 	 * @param productionPrediction  production prediction per quarter-hour
 	 * @param consumptionPrediction consumption prediction per quarter-hour
 	 * @param heatPumpPrediction    heat-pump consumption prediction per
 	 *                              quarter-hour; subtracted from consumption when
 	 *                              the heat pump is part of it
-	 * @return required reserve energy in Wh
+	 * @return the per-quarter battery net charge in Wh
 	 */
-	private int calculateNightReserveEnergy(Prediction productionPrediction, Prediction consumptionPrediction,
+	private float[] quarterlyBatteryFlows(Prediction productionPrediction, Prediction consumptionPrediction,
 			Prediction heatPumpPrediction) {
-		// Align by TIME, not by array index: the dense value arrays shift when a
-		// series has an interior gap, so production and consumption would not line up
-		// per index. The consumption timeline (gap-free, ensured by the caller)
-		// defines the horizon; production and heat-pump values are looked up by the
-		// same quarter and default to 0 W where missing (conservative: no PV / no
-		// heat-pump credit for that quarter).
 		var consumptions = consumptionPrediction.toMapWithAllQuarters();
 		var productions = productionPrediction.toMapWithAllQuarters();
 		var heatPumps = heatPumpPrediction.toMapWithAllQuarters();
@@ -768,28 +784,88 @@ public class ControllerShiHeatPumpImpl extends AbstractOpenemsComponent
 		var remainingHoursCurrentQuarter = Math.max(0F,
 				(15F - now.get(ChronoField.MINUTE_OF_HOUR) % 15F - now.getSecond() / 60F) / 60F);
 
-		float running = 0;
-		float max = 0;
+		var flows = new float[consumptions.size()];
+		var i = 0;
 		var first = true;
 		for (var entry : consumptions.entrySet()) {
+			var durationHours = first ? remainingHoursCurrentQuarter : 0.25F;
+			first = false;
 			var consumption = entry.getValue();
 			if (consumption == null) {
-				first = false;
+				flows[i++] = 0;
 				continue;
 			}
 			var productionValue = productions.get(entry.getKey());
 			var production = productionValue != null ? productionValue : 0;
 			var heatPumpValue = heatPumps.get(entry.getKey());
 			var heatPump = heatPumpValue != null ? Math.max(0, heatPumpValue) : 0;
-			var durationHours = first ? remainingHoursCurrentQuarter : 0.25F;
-			first = false;
-			running += (consumption - heatPump - production) * durationHours;
+			flows[i++] = (production - consumption + heatPump) * durationHours;
+		}
+		return flows;
+	}
+
+	/**
+	 * MAX_DEFICIT reserve: the largest cumulative household deficit (interim
+	 * charge reduces the running deficit, floored at 0) over the horizon. Does not
+	 * credit the daytime recharge.
+	 *
+	 * @param flows the per-quarter battery net charge in Wh
+	 * @return required reserve energy in Wh
+	 */
+	private static int maxCumulativeDeficit(float[] flows) {
+		float running = 0;
+		float max = 0;
+		for (var flow : flows) {
+			running -= flow;
 			if (running < 0) {
 				running = 0;
 			}
-			max = Math.max(max, running);
+			if (running > max) {
+				max = running;
+			}
 		}
 		return Math.round(max);
+	}
+
+	/**
+	 * SOC_TRAJECTORY free energy: the most that can be removed from the battery
+	 * now so the forward SoC trajectory (charged by the flows, clamped at the top
+	 * to the capacity above Min-SoC, NOT clamped at the bottom) never drops below
+	 * Min-SoC. Because the top clamp lets midday PV refill the battery, energy
+	 * removed in the morning is "given back" if the battery would fill anyway.
+	 *
+	 * @param usableEnergy     current energy above Min-SoC in Wh
+	 * @param capacityAboveMin battery capacity above Min-SoC in Wh (top clamp)
+	 * @param flows            the per-quarter battery net charge in Wh
+	 * @return removable (free) energy in Wh
+	 */
+	private static int trajectoryFreeEnergy(int usableEnergy, int capacityAboveMin, float[] flows) {
+		if (trajectoryMinimum(usableEnergy, capacityAboveMin, flows) < 0) {
+			return 0; // household not coverable even if nothing is removed
+		}
+		var lo = 0;
+		var hi = usableEnergy;
+		while (hi - lo > 1) {
+			var mid = (lo + hi) / 2;
+			if (trajectoryMinimum(usableEnergy - mid, capacityAboveMin, flows) >= 0) {
+				lo = mid;
+			} else {
+				hi = mid;
+			}
+		}
+		return trajectoryMinimum(usableEnergy - hi, capacityAboveMin, flows) >= 0 ? hi : lo;
+	}
+
+	private static float trajectoryMinimum(float startEnergy, int capacityAboveMin, float[] flows) {
+		var energy = startEnergy;
+		var min = startEnergy;
+		for (var flow : flows) {
+			energy = Math.min(capacityAboveMin, energy + flow);
+			if (energy < min) {
+				min = energy;
+			}
+		}
+		return min;
 	}
 
 	@Override

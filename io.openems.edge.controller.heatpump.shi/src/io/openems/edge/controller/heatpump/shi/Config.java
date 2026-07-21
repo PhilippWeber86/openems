@@ -42,6 +42,12 @@ import org.osgi.service.metatype.annotations.ObjectClassDefinition;
 	@AttributeDefinition(name = "ESS support enabled", description = "Allows the battery to support the heat pump while the night reserve for the household is guaranteed - during a PV-surplus boost (riding out clouds) and for regular heat-pump runs (e.g. hot water in the evening). This only controls the battery support: with it disabled the heat pump still runs on PV surplus (elevated mode) on its own. Requires this Controller to be scheduled before the Balancing Controller.")
 	boolean essSupportEnabled() default true;
 
+	@AttributeDefinition(name = "Battery support mode", description = "How aggressively free battery energy drives the heat pump. OFFENSIVE: the boost and run extension are allowed up to PV surplus plus deliverable battery power, so spare battery energy is actively turned into heat. CLOUD_BUFFER: the boost and run extension follow the PV surplus alone, and the battery only cushions short surplus dips reactively. In both modes a heat pump running on its own is still paid from the battery (passive support) as long as the night reserve holds.")
+	BatterySupportMode batterySupportMode() default BatterySupportMode.OFFENSIVE;
+
+	@AttributeDefinition(name = "Night reserve mode", description = "How the household night reserve is calculated. MAX_DEFICIT: the largest cumulative deficit over the horizon (safe, but conservative at low morning SoC because it ignores the daytime PV recharge). SOC_TRAJECTORY: a forward battery-SoC simulation that credits the daytime recharge, freeing more energy on a sunny forecast - recommended only with a weather-based production predictor.")
+	NightReserveMode nightReserveMode() default NightReserveMode.MAX_DEFICIT;
+
 	@AttributeDefinition(name = "Minimum SoC", description = "Battery SoC in % that is never used for the heat pump.")
 	int minSoc() default 15;
 
