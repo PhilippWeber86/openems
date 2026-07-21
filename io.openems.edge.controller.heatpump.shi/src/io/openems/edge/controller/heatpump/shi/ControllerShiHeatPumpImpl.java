@@ -714,15 +714,22 @@ public class ControllerShiHeatPumpImpl extends AbstractOpenemsComponent
 
 		var capacityAboveMin = Math.round(essCapacity * (100 - this.config.minSoc()) / 100F);
 		var flows = this.quarterlyBatteryFlows(productionPrediction, consumptionPrediction, heatPumpPrediction);
-		// The raw reserve is the battery energy that must be kept for the household.
-		// MAX_DEFICIT reserves the largest cumulative deficit now; SOC_TRAJECTORY
-		// credits the daytime recharge and reserves only what the forward SoC
-		// trajectory cannot spare.
-		var rawReserve = switch (this.config.nightReserveMode()) {
-		case MAX_DEFICIT -> maxCumulativeDeficit(flows);
-		case SOC_TRAJECTORY -> usableEnergy - trajectoryFreeEnergy(usableEnergy, capacityAboveMin, flows);
+		var deficit = maxCumulativeDeficit(flows);
+		var buffer = this.config.nightReserveBuffer();
+		// The buffer is applied per mode. MAX_DEFICIT inflates the reserve directly.
+		// SOC_TRAJECTORY turns the buffer into a CUSHION (a fraction of the overnight
+		// deficit) that the forward SoC trajectory must keep above Min-SoC at all
+		// times - applied inside the simulation, not as a multiplier afterwards. This
+		// guarantees a real safety margin exactly in the aggressive case where the
+		// trajectory would otherwise free everything (reserve 0): if the forecast
+		// recharge is too optimistic, the household still has the cushion left.
+		var reserveEnergy = switch (this.config.nightReserveMode()) {
+		case MAX_DEFICIT -> Math.round(deficit * buffer / 100F);
+		case SOC_TRAJECTORY -> {
+			var cushion = Math.round(deficit * Math.max(0, buffer - 100) / 100F);
+			yield usableEnergy - trajectoryFreeEnergy(usableEnergy, capacityAboveMin, flows, cushion);
+		}
 		};
-		var reserveEnergy = Math.round(rawReserve * this.config.nightReserveBuffer() / 100F);
 		this._setNightReserveEnergy(reserveEnergy);
 		return Math.max(0, usableEnergy - reserveEnergy);
 	}
@@ -831,29 +838,31 @@ public class ControllerShiHeatPumpImpl extends AbstractOpenemsComponent
 	 * SOC_TRAJECTORY free energy: the most that can be removed from the battery
 	 * now so the forward SoC trajectory (charged by the flows, clamped at the top
 	 * to the capacity above Min-SoC, NOT clamped at the bottom) never drops below
-	 * Min-SoC. Because the top clamp lets midday PV refill the battery, energy
-	 * removed in the morning is "given back" if the battery would fill anyway.
+	 * the cushion above Min-SoC. Because the top clamp lets midday PV refill the
+	 * battery, energy removed in the morning is "given back" if the battery would
+	 * fill anyway; the cushion is the safety margin the forecast must leave on top.
 	 *
 	 * @param usableEnergy     current energy above Min-SoC in Wh
 	 * @param capacityAboveMin battery capacity above Min-SoC in Wh (top clamp)
 	 * @param flows            the per-quarter battery net charge in Wh
+	 * @param cushion          safety margin in Wh the trajectory must stay above
 	 * @return removable (free) energy in Wh
 	 */
-	private static int trajectoryFreeEnergy(int usableEnergy, int capacityAboveMin, float[] flows) {
-		if (trajectoryMinimum(usableEnergy, capacityAboveMin, flows) < 0) {
-			return 0; // household not coverable even if nothing is removed
+	private static int trajectoryFreeEnergy(int usableEnergy, int capacityAboveMin, float[] flows, int cushion) {
+		if (trajectoryMinimum(usableEnergy, capacityAboveMin, flows) < cushion) {
+			return 0; // forecast does not keep the cushion even if nothing is removed
 		}
 		var lo = 0;
 		var hi = usableEnergy;
 		while (hi - lo > 1) {
 			var mid = (lo + hi) / 2;
-			if (trajectoryMinimum(usableEnergy - mid, capacityAboveMin, flows) >= 0) {
+			if (trajectoryMinimum(usableEnergy - mid, capacityAboveMin, flows) >= cushion) {
 				lo = mid;
 			} else {
 				hi = mid;
 			}
 		}
-		return trajectoryMinimum(usableEnergy - hi, capacityAboveMin, flows) >= 0 ? hi : lo;
+		return trajectoryMinimum(usableEnergy - hi, capacityAboveMin, flows) >= cushion ? hi : lo;
 	}
 
 	private static float trajectoryMinimum(float startEnergy, int capacityAboveMin, float[] flows) {

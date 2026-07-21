@@ -1257,6 +1257,7 @@ class ControllerShiHeatPumpImplTest {
 						.setEssId("ess0") //
 						.setHeatPumpPosition(HeatPumpPosition.GRID_SIDE_OF_GRID_METER) //
 						.setMinSoc(15) //
+						.setNightReserveBuffer(100) //
 						.setNightReserveMode(NightReserveMode.MAX_DEFICIT) //
 						.build()) //
 				// Low morning SoC (25 % -> 1000 Wh usable). The overnight deficit is far
@@ -1291,10 +1292,12 @@ class ControllerShiHeatPumpImplTest {
 						.setEssId("ess0") //
 						.setHeatPumpPosition(HeatPumpPosition.GRID_SIDE_OF_GRID_METER) //
 						.setMinSoc(15) //
+						.setNightReserveBuffer(100) //
 						.setNightReserveMode(NightReserveMode.SOC_TRAJECTORY) //
 						.build()) //
-				// Same forecast and SoC as above: the daytime PV refills the battery
-				// before the evening, so the trajectory frees the full 1000 Wh now.
+				// Same forecast and SoC as above, no buffer margin: the daytime PV
+				// refills the battery before the evening, so the trajectory frees the
+				// full 1000 Wh now.
 				.next(new TestCase("Trajectory reserve frees the morning") //
 						.input("_sum", Sum.ChannelId.GRID_ACTIVE_POWER, 0) //
 						.input("_sum", Sum.ChannelId.ESS_DISCHARGE_POWER, 0) //
@@ -1303,6 +1306,44 @@ class ControllerShiHeatPumpImplTest {
 						.input("_sum", Sum.ChannelId.ESS_CAPACITY, 10_000) //
 						.input("heatPump0", ElectricityMeter.ChannelId.ACTIVE_POWER, 0) //
 						.output(ControllerShiHeatPump.ChannelId.FREE_BATTERY_ENERGY, 1000)) //
+				.deactivate();
+	}
+
+	@Test
+	void testNightReserveTrajectoryBufferHoldsBack() throws Exception {
+		var clock = createDummyClock();
+		var cm = new DummyComponentManager(clock);
+		var sum = new DummySum();
+		new ControllerTest(new ControllerShiHeatPumpImpl()) //
+				.addReference("cm", new DummyConfigurationAdmin()) //
+				.addReference("componentManager", cm) //
+				.addReference("sum", sum) //
+				.addReference("predictorManager", morningRecoveryPredictor(cm, sum, Instant.now(clock))) //
+				.addReference("heatPump", new DummyHeatShiHeatPump("heatPump0")) //
+				.addComponent(new DummyManagedSymmetricEss("ess0") //
+						.setPower(new DummyPower(10_000))) //
+				.activate(MyConfig.create() //
+						.setId("ctrl0") //
+						.setHeatPumpId("heatPump0") //
+						.setEssId("ess0") //
+						.setHeatPumpPosition(HeatPumpPosition.GRID_SIDE_OF_GRID_METER) //
+						.setMinSoc(15) //
+						.setNightReserveBuffer(120) //
+						.setNightReserveMode(NightReserveMode.SOC_TRAJECTORY) //
+						.build()) //
+				// Same forecast as the freeing test, but with a 120 % buffer. The forecast
+				// only just covers the night (ends near Min-SoC), so it does not leave the
+				// buffer cushion on top -> the trajectory frees nothing, even though the
+				// nominal reserve would be 0. This is the safety margin the buffer must
+				// provide when relying on the future PV recharge.
+				.next(new TestCase("Buffer cushion holds back the razor-thin forecast") //
+						.input("_sum", Sum.ChannelId.GRID_ACTIVE_POWER, 0) //
+						.input("_sum", Sum.ChannelId.ESS_DISCHARGE_POWER, 0) //
+						.input("_sum", Sum.ChannelId.ESS_ACTIVE_POWER, 0) //
+						.input("_sum", Sum.ChannelId.ESS_SOC, 25) //
+						.input("_sum", Sum.ChannelId.ESS_CAPACITY, 10_000) //
+						.input("heatPump0", ElectricityMeter.ChannelId.ACTIVE_POWER, 0) //
+						.output(ControllerShiHeatPump.ChannelId.FREE_BATTERY_ENERGY, 0)) //
 				.deactivate();
 	}
 
