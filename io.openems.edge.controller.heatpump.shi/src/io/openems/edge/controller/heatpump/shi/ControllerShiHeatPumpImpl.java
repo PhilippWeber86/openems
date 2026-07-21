@@ -6,6 +6,7 @@ import static io.openems.edge.ess.power.api.Pwr.ACTIVE;
 import java.time.Instant;
 import java.time.ZonedDateTime;
 import java.time.temporal.ChronoField;
+import java.time.temporal.ChronoUnit;
 
 import org.osgi.service.cm.ConfigurationAdmin;
 import org.osgi.service.component.ComponentContext;
@@ -23,6 +24,7 @@ import org.osgi.service.metatype.annotations.Designate;
 import io.openems.common.exceptions.OpenemsError.OpenemsNamedException;
 import io.openems.common.types.ChannelAddress;
 import io.openems.common.types.MeterType;
+import io.openems.common.utils.DateUtils;
 import io.openems.edge.common.component.AbstractOpenemsComponent;
 import io.openems.edge.common.component.ComponentManager;
 import io.openems.edge.common.component.OpenemsComponent;
@@ -56,14 +58,25 @@ public class ControllerShiHeatPumpImpl extends AbstractOpenemsComponent
 
 	/**
 	 * Power margin the coverage must exceed to START a run extension. Together with
-	 * the minimum on-time this forms an on-margin / off-hysteresis pair that keeps
-	 * the extension (and thus HR10005/LPC) from toggling near the coverage limit.
+	 * the re-entry lock this forms an on-margin / re-entry-lock pair that keeps the
+	 * extension (and thus HR10005/LPC) from toggling near the coverage limit -
+	 * without holding the setpoint elevation while coverage is lost.
 	 */
 	private static final int RUN_EXTENSION_START_MARGIN = 200; // [W]
 
-	/** Lower / upper bound for the SHI setpoint registers (0.1 degC). */
-	private static final int MIN_SETPOINT_DECIDEGREE = 0;
-	private static final int MAX_SETPOINT_DECIDEGREE = 700;
+	/** Valid range of the SHI setpoint registers (0.1 degC), from the protocol. */
+	private static final int MIN_HEATING_SETPOINT_DECIDEGREE = 150; // HR10001: 15 degC
+	private static final int MAX_HEATING_SETPOINT_DECIDEGREE = 750; // HR10001: 75 degC
+	private static final int MIN_HOT_WATER_SETPOINT_DECIDEGREE = 300; // HR10006: 30 degC
+	private static final int MAX_HOT_WATER_SETPOINT_DECIDEGREE = 750; // HR10006: 75 degC
+
+	/**
+	 * Minimum forecast horizon (quarters) that must be present, gap-free and
+	 * starting in the current quarter before any battery energy is released. 96 =
+	 * 24 h - enough to cover the night deficit the reserve promises to bridge. A
+	 * shorter or later-starting forecast is treated as unavailable (conservative).
+	 */
+	private static final int REQUIRED_FORECAST_QUARTERS = 96;
 
 	@Reference
 	private ConfigurationAdmin cm;
@@ -89,7 +102,9 @@ public class ControllerShiHeatPumpImpl extends AbstractOpenemsComponent
 	private boolean elevatedModeActive = false;
 	private Instant entryConditionsSince = null;
 	private boolean runExtensionActive = false;
-	private Instant runExtensionSince = null;
+	// End of the last run extension; re-entry is locked until minimumSwitchingTime
+	// after it, so the extension cannot restart immediately after being released.
+	private Instant runExtensionEndedAt = Instant.MIN;
 	private Integer naturalHotWaterSetpoint = null;
 
 	public ControllerShiHeatPumpImpl() {
@@ -121,12 +136,13 @@ public class ControllerShiHeatPumpImpl extends AbstractOpenemsComponent
 
 	private void updateConfig(Config config) {
 		this.config = config;
-		// Clamp the setpoints into the valid SHI register range so a misconfiguration
-		// cannot write an out-of-range value to the heat pump.
-		this.heatingSetpointDeciDegree = clamp(MIN_SETPOINT_DECIDEGREE, (int) Math.round(config.heatingSetpoint() * 10),
-				MAX_SETPOINT_DECIDEGREE);
-		this.hotWaterSetpointDeciDegree = clamp(MIN_SETPOINT_DECIDEGREE, (int) Math.round(config.hotWaterSetpoint() * 10),
-				MAX_SETPOINT_DECIDEGREE);
+		// Clamp the setpoints into the valid SHI register ranges (HR10001 15..75 degC,
+		// HR10006 30..75 degC) so a misconfiguration cannot write an out-of-range
+		// value to the heat pump.
+		this.heatingSetpointDeciDegree = clamp(MIN_HEATING_SETPOINT_DECIDEGREE,
+				(int) Math.round(config.heatingSetpoint() * 10), MAX_HEATING_SETPOINT_DECIDEGREE);
+		this.hotWaterSetpointDeciDegree = clamp(MIN_HOT_WATER_SETPOINT_DECIDEGREE,
+				(int) Math.round(config.hotWaterSetpoint() * 10), MAX_HOT_WATER_SETPOINT_DECIDEGREE);
 		this.extensionMinDeltaDeciKelvin = Math.max(0, (int) Math.round(config.extensionMinTemperatureDelta() * 10));
 		OpenemsComponent.updateReferenceFilter(this.cm, this.servicePid(), "heatPump", config.heatPump_id());
 	}
@@ -152,21 +168,29 @@ public class ControllerShiHeatPumpImpl extends AbstractOpenemsComponent
 	 * while this Controller is not regulating.
 	 */
 	private void releaseHeatPump() {
-		try {
-			if (this.heatPump.getHeatingStatus().orElse(0) > 0) {
-				this.heatPump.setHeatingMode(HeatShiHeatPump.MODE_NONE);
-			}
-			if (this.heatPump.getHotWaterStatus().orElse(0) > 0) {
-				this.heatPump.setHotWaterMode(HeatShiHeatPump.MODE_NONE);
-			}
-			this.heatPump.setLpcMode(HeatShiHeatPump.LPC_MODE_NONE);
-			this.heatPump.setPcLimit(0);
-		} catch (OpenemsNamedException | RuntimeException e) {
-			// best-effort: nothing more can be done here
-		}
+		// Release each register independently and unconditionally: gating on the
+		// status channels would skip the release whenever a status is momentarily
+		// invalid (orElse(0)), and one register the SHI rejects (e.g. a mode that is
+		// off) must not prevent releasing the others.
+		this.tryRelease(() -> this.heatPump.setHeatingMode(HeatShiHeatPump.MODE_NONE));
+		this.tryRelease(() -> this.heatPump.setHotWaterMode(HeatShiHeatPump.MODE_NONE));
+		this.tryRelease(() -> this.heatPump.setLpcMode(HeatShiHeatPump.LPC_MODE_NONE));
+		this.tryRelease(() -> this.heatPump.setPcLimit(0));
 		this.elevatedModeActive = false;
 		this.runExtensionActive = false;
-		this.runExtensionSince = null;
+	}
+
+	private void tryRelease(SetpointWrite write) {
+		try {
+			write.apply();
+		} catch (OpenemsNamedException | RuntimeException e) {
+			// best-effort release; nothing more can be done here
+		}
+	}
+
+	@FunctionalInterface
+	private interface SetpointWrite {
+		void apply() throws OpenemsNamedException;
 	}
 
 	@Override
@@ -199,12 +223,9 @@ public class ControllerShiHeatPumpImpl extends AbstractOpenemsComponent
 		var heatPumpPowerValue = this.heatPump.getActivePower().asOptional();
 		if (gridPowerValue.isEmpty() || essPowerValue.isEmpty() || heatPumpPowerValue.isEmpty()) {
 			this._setPowerMeasurementUnavailable(true);
-			this.elevatedModeActive = false;
-			this.runExtensionActive = false;
-			this.runExtensionSince = null;
+			this.releaseHeatPump();
 			this.entryConditionsSince = null;
 			this._setBoostPending(false);
-			this.applyNormalMode();
 			this._setEssForcedExportPower(null);
 			this._setEssDischargeLimit(null);
 			this._setElevatedModeActive(false);
@@ -487,14 +508,14 @@ public class ControllerShiHeatPumpImpl extends AbstractOpenemsComponent
 	 * elevated hot-water setpoint - the compressor is already running, so the
 	 * storage is topped up without an additional compressor start. A natural
 	 * hot-water run must be active and the elevated setpoint must exceed the heat
-	 * pump's own setpoint by the configured minimum delta. To avoid toggling of
-	 * HR10005/LPC near the coverage limit, entry needs the coverage to exceed the
-	 * heat-pump power by a margin (on-margin), and once started the extension is
-	 * held for at least the minimum switching time (off-hysteresis). While active
-	 * the soft power limit caps the heat pump to the covered power, so a brief
-	 * coverage dip within the hold time is ridden through without drawing grid;
-	 * after the hold time the extension ends once coverage is lost. Ends by
-	 * releasing the setpoint - the heat pump then finishes the run on its own.
+	 * pump's own setpoint by the configured minimum delta. As soon as the coverage
+	 * (PV surplus plus deliverable battery support) drops below the heat-pump power
+	 * the extension is released immediately - the SHI soft power limit is only a
+	 * recommendation the heat pump may ignore, so it must not be relied upon to
+	 * avoid grid draw while coverage is lost. Toggling near the coverage limit is
+	 * prevented by an on-margin (entry needs coverage above the heat-pump power by
+	 * a margin) plus a re-entry lock (after release, re-entry is blocked for the
+	 * minimum switching time) - not by holding the setpoint elevation.
 	 *
 	 * @param surplusPower    current natural PV surplus in W
 	 * @param maxSupportPower upper bound of the battery support power in W (0 if no
@@ -506,44 +527,40 @@ public class ControllerShiHeatPumpImpl extends AbstractOpenemsComponent
 			throws OpenemsNamedException {
 		if (!this.config.runExtensionEnabled()) {
 			this.runExtensionActive = false;
-			this.runExtensionSince = null;
 			return;
 		}
+		var now = Instant.now(this.componentManager.getClock());
 		var coverage = surplusPower + maxSupportPower;
 		var naturalRunActive = this.heatPump.getOperatingModeStatus()
 				.orElse(-1) == HeatShiHeatPump.OPERATING_MODE_HOT_WATER
 				&& this.heatPump.getHotWaterStatus().orElse(0) == HeatShiHeatPump.STATUS_ACTIVE;
 		var covered = heatPumpPower > 0 && coverage >= heatPumpPower;
 		// Start needs a power margin on top of full coverage; stopping only needs
-		// coverage to be lost - an asymmetric on-margin / off-hysteresis pair.
+		// coverage to be lost. The margin plus the re-entry lock below prevent
+		// toggling without ever holding the elevation while uncovered.
 		var coveredWithMargin = heatPumpPower > 0 && coverage >= heatPumpPower + RUN_EXTENSION_START_MARGIN;
 
 		if (this.runExtensionActive) {
-			var now = Instant.now(this.componentManager.getClock());
-			var holdElapsed = this.runExtensionSince == null || !this.runExtensionSince
-					.plusSeconds(this.config.minimumSwitchingTime()).isAfter(now);
-			// The natural run ending always stops immediately; a coverage loss only
-			// stops after the minimum hold time (until then the soft limit below caps
-			// the heat pump to the covered power, so no grid is drawn).
-			if (!naturalRunActive || (holdElapsed && !covered)) {
+			// Release the moment coverage is lost (or the natural run ends) - do not
+			// keep the elevated setpoint hoping the soft limit prevents grid draw.
+			if (!naturalRunActive || !covered) {
 				this.runExtensionActive = false;
-				this.runExtensionSince = null;
+				this.runExtensionEndedAt = now;
 				return; // applyNormalMode releases the hot-water registers
 			}
 		} else {
-			if (!naturalRunActive || !coveredWithMargin || this.naturalHotWaterSetpoint == null
+			var reentryLocked = this.runExtensionEndedAt.plusSeconds(this.config.minimumSwitchingTime()).isAfter(now);
+			if (!naturalRunActive || !coveredWithMargin || reentryLocked || this.naturalHotWaterSetpoint == null
 					|| this.hotWaterSetpointDeciDegree
 							- this.naturalHotWaterSetpoint < this.extensionMinDeltaDeciKelvin) {
 				return;
 			}
 			this.runExtensionActive = true;
-			this.runExtensionSince = Instant.now(this.componentManager.getClock());
 		}
 		this.heatPump.setHotWaterMode(HeatShiHeatPump.MODE_SETPOINT);
 		this.heatPump.setHotWaterSetpoint(this.hotWaterSetpointDeciDegree);
-		// Soft-limit the heat pump to the covered power: the raised setpoint invites
-		// a power increase, which must not draw grid power - during a coverage dip
-		// within the hold time this caps the pump instead of ending the extension.
+		// Soft-limit the heat pump to the covered power as a recommendation; the hard
+		// guarantee against grid draw is the immediate release above, not this limit.
 		this.heatPump.setLpcMode(HeatShiHeatPump.LPC_MODE_SOFT);
 		this.heatPump.setPcLimit(Math.max(0, Math.min(MAX_PC_LIMIT, coverage)));
 	}
@@ -651,18 +668,24 @@ public class ControllerShiHeatPumpImpl extends AbstractOpenemsComponent
 			this._setNoPredictionAvailable(true);
 			return 0;
 		}
-		// Fail-safe on an incomplete household forecast: a missing consumption
-		// quarter would silently drop that quarter's demand from the reserve and
-		// overstate the free energy, breaking the "household stays covered"
-		// guarantee. toMapWithAllQuarters() reinstates interior gaps as null (they
-		// are dropped from the dense value list), so any gap in the consumption
-		// prediction counts as no prediction. (Missing PRODUCTION is filled with 0 W
-		// in the reserve calc - conservative: no PV assumed for that quarter.)
-		for (var consumption : consumptionPrediction.toMapWithAllQuarters().values()) {
-			if (consumption == null) {
+		// Fail-safe on an incomplete household forecast. The night reserve can only
+		// promise "household stays covered" if the consumption forecast actually
+		// spans the night, so it must start in the CURRENT quarter and reach at
+		// least the required horizon without any gap. A too-short forecast (e.g.
+		// only the next hour) has no interior gap and would otherwise release almost
+		// the whole battery. Missing PRODUCTION is instead filled with 0 W in the
+		// reserve calc (conservative). toMapWithAllQuarters() reinstates interior
+		// gaps as null; a quarter beyond the forecast is simply absent.
+		var consumptionByQuarter = consumptionPrediction.toMapWithAllQuarters();
+		// Use the same quarter rounding as the prediction keys, so the lookups line
+		// up exactly regardless of the clock's time zone.
+		var quarter = DateUtils.roundDownToQuarter(Instant.now(this.componentManager.getClock()));
+		for (var i = 0; i < REQUIRED_FORECAST_QUARTERS; i++) {
+			if (consumptionByQuarter.get(quarter) == null) {
 				this._setNoPredictionAvailable(true);
 				return 0;
 			}
+			quarter = quarter.plus(15, ChronoUnit.MINUTES);
 		}
 		// Behind the grid meter the consumption prediction includes the heat pump.
 		// If a prediction for the heat-pump channel is available it is subtracted;
