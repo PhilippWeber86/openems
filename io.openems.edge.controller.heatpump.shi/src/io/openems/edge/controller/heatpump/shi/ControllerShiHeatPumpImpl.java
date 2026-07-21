@@ -54,6 +54,17 @@ public class ControllerShiHeatPumpImpl extends AbstractOpenemsComponent
 	/** Upper bound of SHI register HR10041 (300 x 0.1 kW). */
 	private static final int MAX_PC_LIMIT = 30_000; // [W]
 
+	/**
+	 * Power margin the coverage must exceed to START a run extension. Together with
+	 * the minimum on-time this forms an on-margin / off-hysteresis pair that keeps
+	 * the extension (and thus HR10005/LPC) from toggling near the coverage limit.
+	 */
+	private static final int RUN_EXTENSION_START_MARGIN = 200; // [W]
+
+	/** Lower / upper bound for the SHI setpoint registers (0.1 degC). */
+	private static final int MIN_SETPOINT_DECIDEGREE = 0;
+	private static final int MAX_SETPOINT_DECIDEGREE = 700;
+
 	@Reference
 	private ConfigurationAdmin cm;
 
@@ -78,6 +89,7 @@ public class ControllerShiHeatPumpImpl extends AbstractOpenemsComponent
 	private boolean elevatedModeActive = false;
 	private Instant entryConditionsSince = null;
 	private boolean runExtensionActive = false;
+	private Instant runExtensionSince = null;
 	private Integer naturalHotWaterSetpoint = null;
 
 	public ControllerShiHeatPumpImpl() {
@@ -96,34 +108,115 @@ public class ControllerShiHeatPumpImpl extends AbstractOpenemsComponent
 
 	@Modified
 	private void modified(ComponentContext context, Config config) throws OpenemsNamedException {
+		// On a heat-pump-ID change the old device must be released first, otherwise
+		// a previously written setpoint elevation persists on a device this
+		// Controller no longer regulates. The reference is still bound to the old
+		// device at this point, so the release is queued on its channels.
+		if (this.config != null && !this.config.heatPump_id().equals(config.heatPump_id())) {
+			this.releaseHeatPump();
+		}
 		super.modified(context, config.id(), config.alias(), config.enabled());
 		this.updateConfig(config);
 	}
 
 	private void updateConfig(Config config) {
 		this.config = config;
-		this.heatingSetpointDeciDegree = (int) Math.round(config.heatingSetpoint() * 10);
-		this.hotWaterSetpointDeciDegree = (int) Math.round(config.hotWaterSetpoint() * 10);
-		this.extensionMinDeltaDeciKelvin = (int) Math.round(config.extensionMinTemperatureDelta() * 10);
+		// Clamp the setpoints into the valid SHI register range so a misconfiguration
+		// cannot write an out-of-range value to the heat pump.
+		this.heatingSetpointDeciDegree = clamp(MIN_SETPOINT_DECIDEGREE, (int) Math.round(config.heatingSetpoint() * 10),
+				MAX_SETPOINT_DECIDEGREE);
+		this.hotWaterSetpointDeciDegree = clamp(MIN_SETPOINT_DECIDEGREE, (int) Math.round(config.hotWaterSetpoint() * 10),
+				MAX_SETPOINT_DECIDEGREE);
+		this.extensionMinDeltaDeciKelvin = Math.max(0, (int) Math.round(config.extensionMinTemperatureDelta() * 10));
 		OpenemsComponent.updateReferenceFilter(this.cm, this.servicePid(), "heatPump", config.heatPump_id());
+	}
+
+	private static int clamp(int min, int value, int max) {
+		return Math.max(min, Math.min(max, value));
 	}
 
 	@Override
 	@Deactivate
 	protected void deactivate() {
+		// Release the heat pump before unbinding, so no elevation persists once this
+		// Controller no longer regulates.
+		this.releaseHeatPump();
 		super.deactivate();
+	}
+
+	/**
+	 * Releases all external influence on the heat pump: heating and hot-water
+	 * setpoint modes back to "no influence" and the LPC soft limit off. Best-effort
+	 * (swallows errors), used on deactivation, on heat-pump-ID changes and when a
+	 * cycle cannot complete, so a previously written elevation does not persist
+	 * while this Controller is not regulating.
+	 */
+	private void releaseHeatPump() {
+		try {
+			if (this.heatPump.getHeatingStatus().orElse(0) > 0) {
+				this.heatPump.setHeatingMode(HeatShiHeatPump.MODE_NONE);
+			}
+			if (this.heatPump.getHotWaterStatus().orElse(0) > 0) {
+				this.heatPump.setHotWaterMode(HeatShiHeatPump.MODE_NONE);
+			}
+			this.heatPump.setLpcMode(HeatShiHeatPump.LPC_MODE_NONE);
+			this.heatPump.setPcLimit(0);
+		} catch (OpenemsNamedException | RuntimeException e) {
+			// best-effort: nothing more can be done here
+		}
+		this.elevatedModeActive = false;
+		this.runExtensionActive = false;
+		this.runExtensionSince = null;
 	}
 
 	@Override
 	public void run() throws OpenemsNamedException {
+		try {
+			this.runOnce();
+		} catch (OpenemsNamedException | RuntimeException e) {
+			// Fail-safe: this cycle could not complete (e.g. the ESS component is
+			// missing). Release any external influence so a previously written
+			// setpoint elevation cannot persist while the Controller is not
+			// regulating, then rethrow so the fault stays visible.
+			this.releaseHeatPump();
+			throw e;
+		}
+	}
+
+	private void runOnce() throws OpenemsNamedException {
 		this.checkHeatPumpMeterType();
 		// Surface silently ignored writes: with the device in read-only mode all
 		// setpoint commands of this Controller have no effect
 		this._setControlNotAllowed(this.heatPump.getReadOnlyMode().orElse(false));
 
-		var gridActivePower = this.sum.getGridActivePower().orElse(0);
-		var essDischargePower = Math.max(0, this.sum.getEssDischargePower().orElse(0));
-		final var heatPumpPower = Math.max(0, this.heatPump.getActivePower().orElse(0));
+		// Fail-safe against invalid measurements: without a valid grid, ESS and
+		// heat-pump power reading the PV surplus cannot be verified (a missing value
+		// read as 0 W would fake a surplus). Do not start or hold elevated mode and
+		// do not grant battery support; release the heat pump and leave the ESS to
+		// the Balancing Controller.
+		var gridPowerValue = this.sum.getGridActivePower().asOptional();
+		var essPowerValue = this.sum.getEssDischargePower().asOptional();
+		var heatPumpPowerValue = this.heatPump.getActivePower().asOptional();
+		if (gridPowerValue.isEmpty() || essPowerValue.isEmpty() || heatPumpPowerValue.isEmpty()) {
+			this._setPowerMeasurementUnavailable(true);
+			this.elevatedModeActive = false;
+			this.runExtensionActive = false;
+			this.runExtensionSince = null;
+			this.entryConditionsSince = null;
+			this._setBoostPending(false);
+			this.applyNormalMode();
+			this._setEssForcedExportPower(null);
+			this._setEssDischargeLimit(null);
+			this._setElevatedModeActive(false);
+			this._setFreeBatteryEnergy(0);
+			this._setEssSupportPower(0);
+			return;
+		}
+		this._setPowerMeasurementUnavailable(false);
+
+		var gridActivePower = gridPowerValue.get();
+		var essDischargePower = Math.max(0, essPowerValue.get());
+		final var heatPumpPower = Math.max(0, heatPumpPowerValue.get());
 		// PV surplus available for the heat pump, after household and battery
 		// charging took their share and without counting battery discharge:
 		// - BEHIND_GRID_METER: heat pump consumption is part of the grid
@@ -392,12 +485,16 @@ public class ControllerShiHeatPumpImpl extends AbstractOpenemsComponent
 	/**
 	 * Opportunistically extends a natural hot-water run of the heat pump to the
 	 * elevated hot-water setpoint - the compressor is already running, so the
-	 * storage is topped up without an additional compressor start. Requirements,
-	 * re-evaluated every cycle: a natural hot-water run is active, PV surplus
-	 * plus allowed battery support fully cover the current heat-pump power, and
-	 * (at entry) the elevated setpoint exceeds the heat pump's own setpoint by
-	 * the configured minimum delta. Ends by simply releasing the setpoint - the
-	 * heat pump then finishes the run on its own.
+	 * storage is topped up without an additional compressor start. A natural
+	 * hot-water run must be active and the elevated setpoint must exceed the heat
+	 * pump's own setpoint by the configured minimum delta. To avoid toggling of
+	 * HR10005/LPC near the coverage limit, entry needs the coverage to exceed the
+	 * heat-pump power by a margin (on-margin), and once started the extension is
+	 * held for at least the minimum switching time (off-hysteresis). While active
+	 * the soft power limit caps the heat pump to the covered power, so a brief
+	 * coverage dip within the hold time is ridden through without drawing grid;
+	 * after the hold time the extension ends once coverage is lost. Ends by
+	 * releasing the setpoint - the heat pump then finishes the run on its own.
 	 *
 	 * @param surplusPower    current natural PV surplus in W
 	 * @param maxSupportPower upper bound of the battery support power in W (0 if no
@@ -409,38 +506,46 @@ public class ControllerShiHeatPumpImpl extends AbstractOpenemsComponent
 			throws OpenemsNamedException {
 		if (!this.config.runExtensionEnabled()) {
 			this.runExtensionActive = false;
+			this.runExtensionSince = null;
 			return;
 		}
+		var coverage = surplusPower + maxSupportPower;
 		var naturalRunActive = this.heatPump.getOperatingModeStatus()
 				.orElse(-1) == HeatShiHeatPump.OPERATING_MODE_HOT_WATER
 				&& this.heatPump.getHotWaterStatus().orElse(0) == HeatShiHeatPump.STATUS_ACTIVE;
-		// Full coverage from PV surplus plus deliverable battery power. Re-evaluated
-		// every cycle - when the free energy is exhausted (maxSupportPower drops to
-		// 0) and the surplus no longer covers the heat pump, the extension ends. No
-		// commit check is needed here: unlike a boost, the extension holds no
-		// compressor cycle and simply releases the setpoint.
-		var fullyCovered = heatPumpPower > 0 && surplusPower + maxSupportPower >= heatPumpPower;
+		var covered = heatPumpPower > 0 && coverage >= heatPumpPower;
+		// Start needs a power margin on top of full coverage; stopping only needs
+		// coverage to be lost - an asymmetric on-margin / off-hysteresis pair.
+		var coveredWithMargin = heatPumpPower > 0 && coverage >= heatPumpPower + RUN_EXTENSION_START_MARGIN;
 
 		if (this.runExtensionActive) {
-			if (!naturalRunActive || !fullyCovered) {
+			var now = Instant.now(this.componentManager.getClock());
+			var holdElapsed = this.runExtensionSince == null || !this.runExtensionSince
+					.plusSeconds(this.config.minimumSwitchingTime()).isAfter(now);
+			// The natural run ending always stops immediately; a coverage loss only
+			// stops after the minimum hold time (until then the soft limit below caps
+			// the heat pump to the covered power, so no grid is drawn).
+			if (!naturalRunActive || (holdElapsed && !covered)) {
 				this.runExtensionActive = false;
+				this.runExtensionSince = null;
 				return; // applyNormalMode releases the hot-water registers
 			}
 		} else {
-			if (!naturalRunActive || !fullyCovered || this.naturalHotWaterSetpoint == null
+			if (!naturalRunActive || !coveredWithMargin || this.naturalHotWaterSetpoint == null
 					|| this.hotWaterSetpointDeciDegree
 							- this.naturalHotWaterSetpoint < this.extensionMinDeltaDeciKelvin) {
 				return;
 			}
 			this.runExtensionActive = true;
+			this.runExtensionSince = Instant.now(this.componentManager.getClock());
 		}
 		this.heatPump.setHotWaterMode(HeatShiHeatPump.MODE_SETPOINT);
 		this.heatPump.setHotWaterSetpoint(this.hotWaterSetpointDeciDegree);
-		// Soft-limit the heat pump to the covered power: the raised setpoint
-		// invites a power increase, which must not draw grid power before the
-		// coverage check of the next cycle would end the extension
+		// Soft-limit the heat pump to the covered power: the raised setpoint invites
+		// a power increase, which must not draw grid power - during a coverage dip
+		// within the hold time this caps the pump instead of ending the extension.
 		this.heatPump.setLpcMode(HeatShiHeatPump.LPC_MODE_SOFT);
-		this.heatPump.setPcLimit(Math.max(0, Math.min(MAX_PC_LIMIT, surplusPower + maxSupportPower)));
+		this.heatPump.setPcLimit(Math.max(0, Math.min(MAX_PC_LIMIT, coverage)));
 	}
 
 	/**
@@ -546,6 +651,19 @@ public class ControllerShiHeatPumpImpl extends AbstractOpenemsComponent
 			this._setNoPredictionAvailable(true);
 			return 0;
 		}
+		// Fail-safe on an incomplete household forecast: a missing consumption
+		// quarter would silently drop that quarter's demand from the reserve and
+		// overstate the free energy, breaking the "household stays covered"
+		// guarantee. toMapWithAllQuarters() reinstates interior gaps as null (they
+		// are dropped from the dense value list), so any gap in the consumption
+		// prediction counts as no prediction. (Missing PRODUCTION is filled with 0 W
+		// in the reserve calc - conservative: no PV assumed for that quarter.)
+		for (var consumption : consumptionPrediction.toMapWithAllQuarters().values()) {
+			if (consumption == null) {
+				this._setNoPredictionAvailable(true);
+				return 0;
+			}
+		}
 		// Behind the grid meter the consumption prediction includes the heat pump.
 		// If a prediction for the heat-pump channel is available it is subtracted;
 		// otherwise the night reserve stays conservative (too high).
@@ -605,9 +723,15 @@ public class ControllerShiHeatPumpImpl extends AbstractOpenemsComponent
 	 */
 	private int calculateNightReserveEnergy(Prediction productionPrediction, Prediction consumptionPrediction,
 			Prediction heatPumpPrediction) {
-		var productions = productionPrediction.asArray();
-		var consumptions = consumptionPrediction.asArray();
-		var heatPumps = heatPumpPrediction.asArray();
+		// Align by TIME, not by array index: the dense value arrays shift when a
+		// series has an interior gap, so production and consumption would not line up
+		// per index. The consumption timeline (gap-free, ensured by the caller)
+		// defines the horizon; production and heat-pump values are looked up by the
+		// same quarter and default to 0 W where missing (conservative: no PV / no
+		// heat-pump credit for that quarter).
+		var consumptions = consumptionPrediction.toMapWithAllQuarters();
+		var productions = productionPrediction.toMapWithAllQuarters();
+		var heatPumps = heatPumpPrediction.toMapWithAllQuarters();
 
 		var now = ZonedDateTime.now(this.componentManager.getClock());
 		var remainingHoursCurrentQuarter = Math.max(0F,
@@ -615,14 +739,19 @@ public class ControllerShiHeatPumpImpl extends AbstractOpenemsComponent
 
 		float running = 0;
 		float max = 0;
-		for (var i = 0; i < Math.min(productions.length, consumptions.length); i++) {
-			var production = productions[i];
-			var consumption = consumptions[i];
-			if (production == null || consumption == null) {
+		var first = true;
+		for (var entry : consumptions.entrySet()) {
+			var consumption = entry.getValue();
+			if (consumption == null) {
+				first = false;
 				continue;
 			}
-			var heatPump = i < heatPumps.length && heatPumps[i] != null ? Math.max(0, heatPumps[i]) : 0;
-			var durationHours = i == 0 ? remainingHoursCurrentQuarter : 0.25F;
+			var productionValue = productions.get(entry.getKey());
+			var production = productionValue != null ? productionValue : 0;
+			var heatPumpValue = heatPumps.get(entry.getKey());
+			var heatPump = heatPumpValue != null ? Math.max(0, heatPumpValue) : 0;
+			var durationHours = first ? remainingHoursCurrentQuarter : 0.25F;
+			first = false;
 			running += (consumption - heatPump - production) * durationHours;
 			if (running < 0) {
 				running = 0;

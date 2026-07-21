@@ -45,6 +45,9 @@ public interface ControllerShiHeatPump extends OpenemsComponent {
 				.text("Battery energy reserved for the household until the next forecasted PV surplus")), //
 		NO_PREDICTION_AVAILABLE(Doc.of(Level.WARNING) //
 				.text("No valid production/consumption prediction is available.")), //
+		POWER_MEASUREMENT_UNAVAILABLE(Doc.of(Level.WARNING) //
+				.text("Grid, ESS or heat-pump power measurement is missing - the PV surplus cannot be verified, "
+						+ "so no elevated mode and no battery support are granted (fail-safe).")), //
 		CONTROL_NOT_ALLOWED(Doc.of(Level.WARNING) //
 				.text("The heat pump device is in read-only mode - the Controller cannot write any setpoints.")), //
 		METER_TYPE_MISMATCH(Doc.of(Level.WARNING) //
@@ -296,5 +299,23 @@ public interface ControllerShiHeatPump extends OpenemsComponent {
 	 */
 	public default void _setNoPredictionAvailable(boolean value) {
 		this.getNoPredictionAvailableChannel().setNextValue(value);
+	}
+
+	public default StateChannel getPowerMeasurementUnavailableChannel() {
+		return this.channel(ChannelId.POWER_MEASUREMENT_UNAVAILABLE);
+	}
+
+	public default Value<Boolean> getPowerMeasurementUnavailable() {
+		return this.getPowerMeasurementUnavailableChannel().value();
+	}
+
+	/**
+	 * Internal method to set the 'nextValue' on
+	 * {@link ChannelId#POWER_MEASUREMENT_UNAVAILABLE} Channel.
+	 *
+	 * @param value the next value
+	 */
+	public default void _setPowerMeasurementUnavailable(boolean value) {
+		this.getPowerMeasurementUnavailableChannel().setNextValue(value);
 	}
 }

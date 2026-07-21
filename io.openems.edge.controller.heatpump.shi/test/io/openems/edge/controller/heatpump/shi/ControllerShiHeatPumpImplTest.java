@@ -1,6 +1,7 @@
 package io.openems.edge.controller.heatpump.shi;
 
 import static io.openems.common.test.TestUtils.createDummyClock;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
@@ -939,6 +940,177 @@ class ControllerShiHeatPumpImplTest {
 						.input("_sum", Sum.ChannelId.ESS_CAPACITY, 10_000) //
 						.input("heatPump0", ElectricityMeter.ChannelId.ACTIVE_POWER, 2000) //
 						.output(ControllerShiHeatPump.ChannelId.ELEVATED_MODE_ACTIVE, true) //
+						.output(ControllerShiHeatPump.ChannelId.FREE_BATTERY_ENERGY, 0) //
+						.output(ControllerShiHeatPump.ChannelId.ESS_FORCED_EXPORT_POWER, 0)) //
+				.deactivate();
+	}
+
+	@Test
+	void testDeactivateReleasesHeatPump() throws Exception {
+		var clock = createDummyClock();
+		var heatPump = new DummyHeatShiHeatPump("heatPump0");
+		var test = new ControllerTest(new ControllerShiHeatPumpImpl()) //
+				.addReference("cm", new DummyConfigurationAdmin()) //
+				.addReference("componentManager", new DummyComponentManager(clock)) //
+				.addReference("sum", new DummySum()) //
+				.addReference("heatPump", heatPump) //
+				.addComponent(new DummyManagedSymmetricEss("ess0") //
+						.setPower(new DummyPower(10_000))) //
+				.activate(MyConfig.create() //
+						.setId("ctrl0") //
+						.setHeatPumpId("heatPump0") //
+						.setEssId("ess0") //
+						.setHeatPumpPosition(HeatPumpPosition.GRID_SIDE_OF_GRID_METER) //
+						.build()) //
+				// Raise the setpoints via a boost on strong export first.
+				.next(new TestCase("Strong export: elevated") //
+						.input("_sum", Sum.ChannelId.GRID_ACTIVE_POWER, -4000) //
+						.input("_sum", Sum.ChannelId.ESS_DISCHARGE_POWER, 0) //
+						.input("heatPump0", ElectricityMeter.ChannelId.ACTIVE_POWER, 0) //
+						.output("heatPump0", HeatShiHeatPump.ChannelId.HEATING_MODE, HeatShiHeatPump.MODE_SETPOINT) //
+						.output(ControllerShiHeatPump.ChannelId.ELEVATED_MODE_ACTIVE, true));
+		// Deactivating the Controller must release all external influence, so no
+		// setpoint elevation persists on the still-connected heat pump.
+		test.deactivate();
+		assertEquals(Integer.valueOf(HeatShiHeatPump.MODE_NONE),
+				heatPump.getHeatingModeChannel().getNextWriteValue().orElse(null));
+		assertEquals(Integer.valueOf(HeatShiHeatPump.MODE_NONE),
+				heatPump.getHotWaterModeChannel().getNextWriteValue().orElse(null));
+		assertEquals(Integer.valueOf(HeatShiHeatPump.LPC_MODE_NONE),
+				heatPump.getLpcModeChannel().getNextWriteValue().orElse(null));
+		assertEquals(Integer.valueOf(0), heatPump.getPcLimitChannel().getNextWriteValue().orElse(null));
+	}
+
+	@Test
+	void testPowerMeasurementUnavailableBlocksBoost() throws Exception {
+		var clock = createDummyClock();
+		var cm = new DummyComponentManager(clock);
+		var sum = new DummySum();
+		new ControllerTest(new ControllerShiHeatPumpImpl()) //
+				.addReference("cm", new DummyConfigurationAdmin()) //
+				.addReference("componentManager", cm) //
+				.addReference("sum", sum) //
+				.addReference("predictorManager", sunnyPredictor(cm, sum, Instant.now(clock))) //
+				.addReference("heatPump", new DummyHeatShiHeatPump("heatPump0") //
+						.withMeterType(MeterType.CONSUMPTION_METERED)) //
+				.addComponent(new DummyManagedSymmetricEss("ess0") //
+						.setPower(new DummyPower(10_000))) //
+				.activate(MyConfig.create() //
+						.setId("ctrl0") //
+						.setHeatPumpId("heatPump0") //
+						.setEssId("ess0") //
+						.setHeatPumpPosition(HeatPumpPosition.BEHIND_GRID_METER) //
+						.build()) //
+				// Grid and ESS power are not available (channels undefined). The heat pump
+				// reports 3 kW - behind the meter the surplus formula would read the
+				// missing values as 0 W and fake a 3 kW surplus. Fail-safe: no boost, no
+				// support, warning raised.
+				.next(new TestCase("Missing grid/ESS measurement: no boost despite reported heat-pump power") //
+						.input("_sum", Sum.ChannelId.ESS_SOC, 65) //
+						.input("_sum", Sum.ChannelId.ESS_CAPACITY, 10_000) //
+						.input("heatPump0", ElectricityMeter.ChannelId.ACTIVE_POWER, 3000) //
+						.output("heatPump0", HeatShiHeatPump.ChannelId.HEATING_MODE, 0) //
+						.output(ControllerShiHeatPump.ChannelId.ELEVATED_MODE_ACTIVE, false) //
+						.output(ControllerShiHeatPump.ChannelId.POWER_MEASUREMENT_UNAVAILABLE, true) //
+						.output(ControllerShiHeatPump.ChannelId.ESS_SUPPORT_POWER, 0)) //
+				.deactivate();
+	}
+
+	@Test
+	void testRunExtensionHoldsThroughDipThenEnds() throws Exception {
+		var clock = createDummyClock();
+		var cm = new DummyComponentManager(clock);
+		var sum = new DummySum();
+		new ControllerTest(new ControllerShiHeatPumpImpl()) //
+				.addReference("cm", new DummyConfigurationAdmin()) //
+				.addReference("componentManager", cm) //
+				.addReference("sum", sum) //
+				.addReference("predictorManager", sunnyPredictor(cm, sum, Instant.now(clock))) //
+				.addReference("heatPump", new DummyHeatShiHeatPump("heatPump0")) //
+				// Weak battery: 500 W deliverable.
+				.addComponent(new DummyManagedSymmetricEss("ess0") //
+						.setPower(new DummyPower(500))) //
+				.activate(MyConfig.create() //
+						.setId("ctrl0") //
+						.setHeatPumpId("heatPump0") //
+						.setEssId("ess0") //
+						.setHeatPumpPosition(HeatPumpPosition.GRID_SIDE_OF_GRID_METER) //
+						.setMinimumSurplusPowerForElevatedMode(5000) //
+						.build()) //
+				// Natural 2500 W hot-water run, coverage 2500 surplus + 500 battery = 3000
+				// > 2500 + margin -> extension starts.
+				.next(new TestCase("Covered with margin: extension starts") //
+						.input("_sum", Sum.ChannelId.GRID_ACTIVE_POWER, -2500) //
+						.input("_sum", Sum.ChannelId.ESS_DISCHARGE_POWER, 0) //
+						.input("_sum", Sum.ChannelId.ESS_ACTIVE_POWER, 0) //
+						.input("_sum", Sum.ChannelId.ESS_SOC, 65) //
+						.input("_sum", Sum.ChannelId.ESS_CAPACITY, 10_000) //
+						.input("heatPump0", ElectricityMeter.ChannelId.ACTIVE_POWER, 2500) //
+						.input("heatPump0", HeatShiHeatPump.ChannelId.OPERATING_MODE_STATUS, 1) //
+						.input("heatPump0", HeatShiHeatPump.ChannelId.HOT_WATER_STATUS, 3) //
+						.input("heatPump0", HeatShiHeatPump.ChannelId.HOT_WATER_MODE, 0) //
+						.input("heatPump0", HeatShiHeatPump.ChannelId.HOT_WATER_ACTIVE_SETPOINT, 480) //
+						.output("heatPump0", HeatShiHeatPump.ChannelId.HOT_WATER_MODE, 1) //
+						.output("heatPump0", HeatShiHeatPump.ChannelId.PC_LIMIT, 3000) //
+						.output(ControllerShiHeatPump.ChannelId.RUN_EXTENSION_ACTIVE, true)) //
+				// Coverage drops below the heat-pump power, but within the minimum hold
+				// time: the extension stays active and the soft limit caps the pump to the
+				// covered power (no grid drawn), instead of toggling off.
+				.next(new TestCase("Coverage dip within hold time: extension held, pump capped") //
+						.input("_sum", Sum.ChannelId.GRID_ACTIVE_POWER, -1000) //
+						.output("heatPump0", HeatShiHeatPump.ChannelId.PC_LIMIT, 1500) //
+						.output(ControllerShiHeatPump.ChannelId.RUN_EXTENSION_ACTIVE, true)) //
+				// After the minimum hold time with coverage still lost, the extension ends.
+				.next(new TestCase("Coverage still lost after hold time: extension ends") //
+						.timeleap(clock, 6, ChronoUnit.MINUTES) //
+						.input("_sum", Sum.ChannelId.GRID_ACTIVE_POWER, -1000) //
+						.output("heatPump0", HeatShiHeatPump.ChannelId.HOT_WATER_MODE, 0) //
+						.output(ControllerShiHeatPump.ChannelId.RUN_EXTENSION_ACTIVE, false)) //
+				.deactivate();
+	}
+
+	@Test
+	void testConsumptionForecastGapDisablesSupport() throws Exception {
+		var clock = createDummyClock();
+		var cm = new DummyComponentManager(clock);
+		var sum = new DummySum();
+		// Full production forecast, but the consumption forecast has a gap (a null
+		// quarter). That quarter's demand would silently drop from the reserve, so
+		// the forecast counts as unavailable and no battery energy is released.
+		var prod = new Integer[96];
+		var cons = new Integer[96];
+		Arrays.fill(prod, 5000);
+		Arrays.fill(cons, 500);
+		cons[10] = null;
+		var predictorManager = new DummyPredictorManager(//
+				new DummyPredictor("predictor0", cm, Prediction.from(sum, SUM_PRODUCTION_ACTIVE_POWER, Instant.now(clock),
+						prod), SUM_PRODUCTION_ACTIVE_POWER),
+				new DummyPredictor("predictor1", cm, Prediction.from(sum, SUM_CONSUMPTION_ACTIVE_POWER, Instant.now(clock),
+						cons), SUM_CONSUMPTION_ACTIVE_POWER));
+		new ControllerTest(new ControllerShiHeatPumpImpl()) //
+				.addReference("cm", new DummyConfigurationAdmin()) //
+				.addReference("componentManager", cm) //
+				.addReference("sum", sum) //
+				.addReference("predictorManager", predictorManager) //
+				.addReference("heatPump", new DummyHeatShiHeatPump("heatPump0")) //
+				.addComponent(new DummyManagedSymmetricEss("ess0") //
+						.setPower(new DummyPower(10_000))) //
+				.activate(MyConfig.create() //
+						.setId("ctrl0") //
+						.setHeatPumpId("heatPump0") //
+						.setEssId("ess0") //
+						.setHeatPumpPosition(HeatPumpPosition.GRID_SIDE_OF_GRID_METER) //
+						.setMinimumSurplusPowerForElevatedMode(5000) //
+						.build()) //
+				.next(new TestCase("Consumption forecast gap: no released energy, no support") //
+						.input("_sum", Sum.ChannelId.GRID_ACTIVE_POWER, 0) //
+						.input("_sum", Sum.ChannelId.ESS_DISCHARGE_POWER, 0) //
+						.input("_sum", Sum.ChannelId.ESS_ACTIVE_POWER, 0) //
+						.input("_sum", Sum.ChannelId.ESS_SOC, 65) //
+						.input("_sum", Sum.ChannelId.ESS_CAPACITY, 10_000) //
+						.input("heatPump0", ElectricityMeter.ChannelId.ACTIVE_POWER, 2000) //
+						.output(ControllerShiHeatPump.ChannelId.ELEVATED_MODE_ACTIVE, false) //
+						.output(ControllerShiHeatPump.ChannelId.NO_PREDICTION_AVAILABLE, true) //
 						.output(ControllerShiHeatPump.ChannelId.FREE_BATTERY_ENERGY, 0) //
 						.output(ControllerShiHeatPump.ChannelId.ESS_FORCED_EXPORT_POWER, 0)) //
 				.deactivate();
