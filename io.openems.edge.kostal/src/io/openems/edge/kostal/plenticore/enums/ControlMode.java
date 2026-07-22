@@ -13,9 +13,13 @@ public enum ControlMode {
 	 */
 	REMOTE,
 	/**
-	 * Uses the internal 'AUTO' mode of the inverter. Allows remote control of
-	 * Set-Points based on differences. Requires a Smart Meter at the grid junction
-	 * point.
+	 * Uses the internal 'AUTO' self-consumption mode of the inverter while OpenEMS
+	 * has no active Set-Point to apply, and takes over with remote Set-Points only
+	 * when an intervention is required. Handing control back to the internal mode
+	 * relies on the inverter's control timeout (the battery-management-mode
+	 * register is read-only): OpenEMS stops writing the Set-Point and the inverter
+	 * returns to internal operation after the configured watchdog time. Requires a
+	 * Smart Meter at the grid junction point.
 	 */
 	SMART;
 }

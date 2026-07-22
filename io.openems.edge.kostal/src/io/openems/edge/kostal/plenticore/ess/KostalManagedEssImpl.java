@@ -158,11 +158,24 @@ public class KostalManagedEssImpl extends AbstractOpenemsModbusComponent impleme
 		// managed or internal mode -> switch to max. self consumption automatic
 		// (no writes to channel)
 		if (this.isManaged() && this.controlMode != ControlMode.INTERNAL) {
+			// SMART mode: within the idle band there is no active set-point to apply.
+			// Stop writing (and do not refresh at the watchdog) so the inverter's
+			// control timeout expires and it returns to its internal self-consumption
+			// regulation - instead of pinning the battery at 0 W. The
+			// battery-management-mode register is read-only, so this fallback timeout
+			// is the only way to hand control back to the inverter (see the KOSTAL
+			// MODBUS-TCP documentation, section "External battery management").
+			if (this.controlMode == ControlMode.SMART && Math.abs(activePower) < this.tolerance) {
+				this.lastSetPower = null;
+				return;
+			}
+
 			Instant now = Instant.now();
 			int powerToWrite = activePower;
 
-			// Apply idle zone: values within +/- tolerance around zero are set to 0W
-			// This prevents constant charge/discharge switching on small grid fluctuations
+			// Apply idle zone: values within +/- tolerance around zero are set to 0W.
+			// This prevents constant charge/discharge switching on small grid
+			// fluctuations. REMOTE keeps full control and does not release to AUTO.
 			if (Math.abs(activePower) < this.tolerance) {
 				powerToWrite = 0;
 			}
