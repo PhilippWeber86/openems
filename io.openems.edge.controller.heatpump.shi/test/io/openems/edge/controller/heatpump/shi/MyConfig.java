@@ -25,6 +25,7 @@ public class MyConfig extends AbstractComponentConfig implements Config {
 		private boolean forecastVetoEnabled = false;
 		private boolean runExtensionEnabled = true;
 		private double extensionMinTemperatureDelta = 3.0;
+		private boolean debugMode = false;
 
 		private Builder() {
 		}
@@ -116,6 +117,11 @@ public class MyConfig extends AbstractComponentConfig implements Config {
 
 		public Builder setExtensionMinTemperatureDelta(double value) {
 			this.extensionMinTemperatureDelta = value;
+			return this;
+		}
+
+		public Builder setDebugMode(boolean value) {
+			this.debugMode = value;
 			return this;
 		}
 
@@ -223,6 +229,11 @@ public class MyConfig extends AbstractComponentConfig implements Config {
 	@Override
 	public double extensionMinTemperatureDelta() {
 		return this.builder.extensionMinTemperatureDelta;
+	}
+
+	@Override
+	public boolean debugMode() {
+		return this.builder.debugMode;
 	}
 
 	@Override

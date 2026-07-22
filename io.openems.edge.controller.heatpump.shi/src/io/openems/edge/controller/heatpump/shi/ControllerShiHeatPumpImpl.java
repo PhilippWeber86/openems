@@ -879,6 +879,9 @@ public class ControllerShiHeatPumpImpl extends AbstractOpenemsComponent
 
 	@Override
 	public String debugLog() {
+		if (!this.config.debugMode()) {
+			return null;
+		}
 		return "Elevated=" + this.elevatedModeActive //
 				+ "|RunExt=" + this.runExtensionActive //
 				+ "|Support=" + this.getEssSupportPower().asOptional().orElse(null) //
