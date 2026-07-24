@@ -7,6 +7,8 @@ import java.time.Instant;
 import java.time.ZonedDateTime;
 import java.time.temporal.ChronoField;
 import java.time.temporal.ChronoUnit;
+import java.util.NavigableMap;
+import java.util.TreeMap;
 
 import org.osgi.service.cm.ConfigurationAdmin;
 import org.osgi.service.component.ComponentContext;
@@ -716,28 +718,37 @@ public class ControllerShiHeatPumpImpl extends AbstractOpenemsComponent
 			return 0;
 		}
 		var productionPrediction = this.getProductionPrediction();
-		var consumptionPrediction = this.getConsumptionPrediction();
-		if (productionPrediction.isEmpty() || consumptionPrediction.isEmpty()) {
+		if (productionPrediction.isEmpty()) {
 			this._setNoPredictionAvailable(true);
 			return 0;
 		}
-		// Fail-safe on an incomplete household forecast. The night reserve can only
-		// promise "household stays covered" if the consumption forecast actually
-		// spans the night, so it must start in the CURRENT quarter and reach at
-		// least the required horizon without any gap. A too-short forecast (e.g.
-		// only the next hour) has no interior gap and would otherwise release almost
-		// the whole battery. Missing PRODUCTION is instead filled with 0 W in the
-		// reserve calc (conservative). toMapWithAllQuarters() reinstates interior
-		// gaps as null; a quarter beyond the forecast is simply absent.
-		var consumptionByQuarter = consumptionPrediction.toMapWithAllQuarters();
-		// Use the same quarter rounding as the prediction keys, so the lookups line
-		// up exactly regardless of the clock's time zone.
+		// Build the household consumption forecast quarter by quarter over the night
+		// horizon. Prefer the Unmanaged channel (managed consumers are planned by the
+		// EMS and do not belong into the household reserve); where a quarter is
+		// missing there, fall back to the plain consumption channel. The plain value
+		// includes those managed consumers and is therefore >= the unmanaged one, so
+		// the substitution is CONSERVATIVE (a slightly too-high household load
+		// reserves a little more, never too little). If a quarter is missing in BOTH
+		// channels the forecast cannot promise the night gap-free -> fail-safe,
+		// release nothing. Real forecast values only, no interpolation. Missing
+		// PRODUCTION is filled with 0 W in the flow calc (also conservative). The
+		// same quarter rounding as the prediction keys lines the lookups up exactly.
+		var unmanagedConsumption = this.predictorManager //
+				.getPrediction(SUM_UNMANAGED_CONSUMPTION_ACTIVE_POWER).toMapWithAllQuarters();
+		var totalConsumption = this.predictorManager //
+				.getPrediction(SUM_CONSUMPTION_ACTIVE_POWER).toMapWithAllQuarters();
+		var consumptionByQuarter = new TreeMap<Instant, Integer>();
 		var quarter = DateUtils.roundDownToQuarter(Instant.now(this.componentManager.getClock()));
 		for (var i = 0; i < REQUIRED_FORECAST_QUARTERS; i++) {
-			if (consumptionByQuarter.get(quarter) == null) {
+			var value = unmanagedConsumption.get(quarter);
+			if (value == null) {
+				value = totalConsumption.get(quarter);
+			}
+			if (value == null) {
 				this._setNoPredictionAvailable(true);
 				return 0;
 			}
+			consumptionByQuarter.put(quarter, value);
 			quarter = quarter.plus(15, ChronoUnit.MINUTES);
 		}
 		// Behind the grid meter the consumption prediction includes the heat pump.
@@ -749,7 +760,7 @@ public class ControllerShiHeatPumpImpl extends AbstractOpenemsComponent
 				: Prediction.EMPTY_PREDICTION;
 
 		var capacityAboveMin = Math.round(essCapacity * (100 - this.config.minSoc()) / 100F);
-		var flows = this.quarterlyBatteryFlows(productionPrediction, consumptionPrediction, heatPumpPrediction);
+		var flows = this.quarterlyBatteryFlows(productionPrediction, consumptionByQuarter, heatPumpPrediction);
 		var deficit = maxCumulativeDeficit(flows);
 		var buffer = this.config.nightReserveBuffer();
 		// The buffer is applied per mode. MAX_DEFICIT inflates the reserve directly.
@@ -810,16 +821,16 @@ public class ControllerShiHeatPumpImpl extends AbstractOpenemsComponent
 	 * quarter and default to 0 W where missing (conservative). The first quarter
 	 * counts only its remaining fraction.
 	 *
-	 * @param productionPrediction  production prediction per quarter-hour
-	 * @param consumptionPrediction consumption prediction per quarter-hour
-	 * @param heatPumpPrediction    heat-pump consumption prediction per
-	 *                              quarter-hour; subtracted from consumption when
-	 *                              the heat pump is part of it
+	 * @param productionPrediction production prediction per quarter-hour
+	 * @param consumptions         the gap-filled consumption per quarter, keyed by
+	 *                             time (null where still missing)
+	 * @param heatPumpPrediction   heat-pump consumption prediction per quarter-hour;
+	 *                             subtracted from consumption when the heat pump is
+	 *                             part of it
 	 * @return the per-quarter battery net charge in Wh
 	 */
-	private float[] quarterlyBatteryFlows(Prediction productionPrediction, Prediction consumptionPrediction,
-			Prediction heatPumpPrediction) {
-		var consumptions = consumptionPrediction.toMapWithAllQuarters();
+	private float[] quarterlyBatteryFlows(Prediction productionPrediction,
+			NavigableMap<Instant, Integer> consumptions, Prediction heatPumpPrediction) {
 		var productions = productionPrediction.toMapWithAllQuarters();
 		var heatPumps = heatPumpPrediction.toMapWithAllQuarters();
 

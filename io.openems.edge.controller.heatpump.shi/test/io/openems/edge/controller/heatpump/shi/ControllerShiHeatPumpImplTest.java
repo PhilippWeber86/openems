@@ -101,6 +101,34 @@ class ControllerShiHeatPumpImplTest {
 						SUM_CONSUMPTION_ACTIVE_POWER));
 	}
 
+	/**
+	 * Predictor with separate Unmanaged and total (plain) consumption forecasts, so
+	 * the per-quarter fallback in the reserve calc can be exercised. Any array entry
+	 * may be null to model a gap.
+	 *
+	 * @param cm                   the {@link DummyComponentManager}
+	 * @param sum                  the {@link DummySum}
+	 * @param now                  the current time
+	 * @param production           production forecast (plain channel)
+	 * @param unmanagedConsumption Unmanaged-consumption forecast (may contain nulls)
+	 * @param totalConsumption     plain consumption forecast (may contain nulls)
+	 * @return the {@link DummyPredictorManager}
+	 * @throws OpenemsNamedException on error
+	 */
+	private static DummyPredictorManager consumptionSplitPredictor(DummyComponentManager cm, DummySum sum, Instant now,
+			Integer[] production, Integer[] unmanagedConsumption, Integer[] totalConsumption)
+			throws OpenemsNamedException {
+		return new DummyPredictorManager(//
+				new DummyPredictor("predictor0", cm, Prediction.from(sum, SUM_PRODUCTION_ACTIVE_POWER, now, production),
+						SUM_PRODUCTION_ACTIVE_POWER),
+				new DummyPredictor("predictor1", cm,
+						Prediction.from(sum, SUM_UNMANAGED_CONSUMPTION_ACTIVE_POWER, now, unmanagedConsumption),
+						SUM_UNMANAGED_CONSUMPTION_ACTIVE_POWER),
+				new DummyPredictor("predictor2", cm,
+						Prediction.from(sum, SUM_CONSUMPTION_ACTIVE_POWER, now, totalConsumption),
+						SUM_CONSUMPTION_ACTIVE_POWER));
+	}
+
 	@Test
 	void testElevatedModeOnGridExportWithHysteresis() throws Exception {
 		var clock = createDummyClock();
@@ -1050,6 +1078,133 @@ class ControllerShiHeatPumpImplTest {
 	}
 
 	@Test
+	void testUnmanagedGapFilledFromTotalConsumption() throws Exception {
+		var clock = createDummyClock();
+		var cm = new DummyComponentManager(clock);
+		var sum = new DummySum();
+		var prod = new Integer[96];
+		var unmanaged = new Integer[96];
+		var total = new Integer[96];
+		Arrays.fill(prod, 5000);
+		Arrays.fill(unmanaged, 500);
+		Arrays.fill(total, 500);
+		unmanaged[10] = null; // gap in the Unmanaged channel, present in the total channel
+		new ControllerTest(new ControllerShiHeatPumpImpl()) //
+				.addReference("cm", new DummyConfigurationAdmin()) //
+				.addReference("componentManager", cm) //
+				.addReference("sum", sum) //
+				.addReference("predictorManager",
+						consumptionSplitPredictor(cm, sum, Instant.now(clock), prod, unmanaged, total)) //
+				.addReference("heatPump", new DummyHeatShiHeatPump("heatPump0")) //
+				.addComponent(new DummyManagedSymmetricEss("ess0") //
+						.setPower(new DummyPower(10_000))) //
+				.activate(MyConfig.create() //
+						.setId("ctrl0") //
+						.setHeatPumpId("heatPump0") //
+						.setEssId("ess0") //
+						.setHeatPumpPosition(HeatPumpPosition.GRID_SIDE_OF_GRID_METER) //
+						.build()) //
+				// The Unmanaged gap is filled from the total consumption forecast ->
+				// forecast counts as valid -> battery support is granted.
+				.next(new TestCase("Unmanaged gap filled from total consumption: support granted") //
+						.input("_sum", Sum.ChannelId.GRID_ACTIVE_POWER, 0) //
+						.input("_sum", Sum.ChannelId.ESS_DISCHARGE_POWER, 0) //
+						.input("_sum", Sum.ChannelId.ESS_ACTIVE_POWER, 0) //
+						.input("_sum", Sum.ChannelId.ESS_SOC, 65) //
+						.input("_sum", Sum.ChannelId.ESS_CAPACITY, 10_000) //
+						.input("heatPump0", ElectricityMeter.ChannelId.ACTIVE_POWER, 1000) //
+						.output(ControllerShiHeatPump.ChannelId.NO_PREDICTION_AVAILABLE, false) //
+						.output(ControllerShiHeatPump.ChannelId.ESS_FORCED_EXPORT_POWER, 1000)) //
+				.deactivate();
+	}
+
+	@Test
+	void testBothConsumptionForecastsGapFailsSafe() throws Exception {
+		var clock = createDummyClock();
+		var cm = new DummyComponentManager(clock);
+		var sum = new DummySum();
+		var prod = new Integer[96];
+		var unmanaged = new Integer[96];
+		var total = new Integer[96];
+		Arrays.fill(prod, 5000);
+		Arrays.fill(unmanaged, 500);
+		Arrays.fill(total, 500);
+		unmanaged[10] = null; // same quarter missing in BOTH channels
+		total[10] = null;
+		new ControllerTest(new ControllerShiHeatPumpImpl()) //
+				.addReference("cm", new DummyConfigurationAdmin()) //
+				.addReference("componentManager", cm) //
+				.addReference("sum", sum) //
+				.addReference("predictorManager",
+						consumptionSplitPredictor(cm, sum, Instant.now(clock), prod, unmanaged, total)) //
+				.addReference("heatPump", new DummyHeatShiHeatPump("heatPump0")) //
+				.addComponent(new DummyManagedSymmetricEss("ess0") //
+						.setPower(new DummyPower(10_000))) //
+				.activate(MyConfig.create() //
+						.setId("ctrl0") //
+						.setHeatPumpId("heatPump0") //
+						.setEssId("ess0") //
+						.setHeatPumpPosition(HeatPumpPosition.GRID_SIDE_OF_GRID_METER) //
+						.build()) //
+				// No forecast covers the missing quarter -> fail-safe: no battery
+				// released, warning set.
+				.next(new TestCase("Gap in both consumption channels: fail-safe, no support") //
+						.input("_sum", Sum.ChannelId.GRID_ACTIVE_POWER, 0) //
+						.input("_sum", Sum.ChannelId.ESS_DISCHARGE_POWER, 0) //
+						.input("_sum", Sum.ChannelId.ESS_ACTIVE_POWER, 0) //
+						.input("_sum", Sum.ChannelId.ESS_SOC, 65) //
+						.input("_sum", Sum.ChannelId.ESS_CAPACITY, 10_000) //
+						.input("heatPump0", ElectricityMeter.ChannelId.ACTIVE_POWER, 1000) //
+						.output(ControllerShiHeatPump.ChannelId.NO_PREDICTION_AVAILABLE, true) //
+						.output(ControllerShiHeatPump.ChannelId.FREE_BATTERY_ENERGY, 0) //
+						.output(ControllerShiHeatPump.ChannelId.ESS_FORCED_EXPORT_POWER, 0)) //
+				.deactivate();
+	}
+
+	@Test
+	void testFallbackConsumptionEntersNightReserve() throws Exception {
+		var clock = createDummyClock();
+		var cm = new DummyComponentManager(clock);
+		var sum = new DummySum();
+		var prod = new Integer[96];
+		var unmanaged = new Integer[96];
+		var total = new Integer[96];
+		Arrays.fill(prod, 0); // no production
+		Arrays.fill(unmanaged, 0); // no household load ...
+		Arrays.fill(total, 0);
+		unmanaged[10] = null; // ... except a gap at quarter 10, where only the total
+		total[10] = 4000; // forecast has 4000 W -> 1000 Wh deficit -> 1200 Wh at 120 %
+		new ControllerTest(new ControllerShiHeatPumpImpl()) //
+				.addReference("cm", new DummyConfigurationAdmin()) //
+				.addReference("componentManager", cm) //
+				.addReference("sum", sum) //
+				.addReference("predictorManager",
+						consumptionSplitPredictor(cm, sum, Instant.now(clock), prod, unmanaged, total)) //
+				.addReference("heatPump", new DummyHeatShiHeatPump("heatPump0")) //
+				.addComponent(new DummyManagedSymmetricEss("ess0") //
+						.setPower(new DummyPower(10_000))) //
+				.activate(MyConfig.create() //
+						.setId("ctrl0") //
+						.setHeatPumpId("heatPump0") //
+						.setEssId("ess0") //
+						.setHeatPumpPosition(HeatPumpPosition.GRID_SIDE_OF_GRID_METER) //
+						.setMinSoc(15) //
+						.build()) // MAX_DEFICIT + 120 % buffer are the defaults
+				// The substituted total value (4000 W) is the ONLY load and must drive
+				// the reserve exactly: 4000 W over a quarter = 1000 Wh, x 120 % = 1200 Wh.
+				.next(new TestCase("Fallback value drives the night reserve exactly") //
+						.input("_sum", Sum.ChannelId.GRID_ACTIVE_POWER, 0) //
+						.input("_sum", Sum.ChannelId.ESS_DISCHARGE_POWER, 0) //
+						.input("_sum", Sum.ChannelId.ESS_ACTIVE_POWER, 0) //
+						.input("_sum", Sum.ChannelId.ESS_SOC, 65) //
+						.input("_sum", Sum.ChannelId.ESS_CAPACITY, 10_000) //
+						.input("heatPump0", ElectricityMeter.ChannelId.ACTIVE_POWER, 0) //
+						.output(ControllerShiHeatPump.ChannelId.NO_PREDICTION_AVAILABLE, false) //
+						.output(ControllerShiHeatPump.ChannelId.NIGHT_RESERVE_ENERGY, 1200)) //
+				.deactivate();
+	}
+
+	@Test
 	void testDisabledEssSupportStillBoostsWithoutSupport() throws Exception {
 		var clock = createDummyClock();
 		var cm = new DummyComponentManager(clock);
@@ -1314,8 +1469,9 @@ class ControllerShiHeatPumpImplTest {
 		var cm = new DummyComponentManager(clock);
 		var sum = new DummySum();
 		// Full production forecast, but the consumption forecast has a gap (a null
-		// quarter). That quarter's demand would silently drop from the reserve, so
-		// the forecast counts as unavailable and no battery energy is released.
+		// quarter) and no Unmanaged forecast to fall back to, so the missing quarter
+		// stays unavailable -> the forecast counts as incomplete and no battery energy
+		// is released.
 		var prod = new Integer[96];
 		var cons = new Integer[96];
 		Arrays.fill(prod, 5000);
