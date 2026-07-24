@@ -63,6 +63,9 @@ import org.osgi.service.metatype.annotations.ObjectClassDefinition;
 	@AttributeDefinition(name = "Boost confirmation time", description = "Elevated mode starts only after its entry conditions were fulfilled continuously for this many seconds. Filters short surplus spikes that would otherwise trigger a committed compressor cycle.")
 	int boostConfirmationSeconds() default 240;
 
+	@AttributeDefinition(name = "Switch-off delay", description = "Elevated mode is only left after its coverage (PV surplus plus the invited battery support) has stayed below the heat-pump power continuously for this many seconds. Bridges short surplus dips (clouds, measurement troughs) so a running boost is not aborted on noise. The compressor cycle limits and the minimum switching time still apply on top.")
+	int switchOffDelay() default 120;
+
 	@AttributeDefinition(name = "Forecast veto enabled", description = "Blocks elevated-mode entry if the prediction does not show enough surplus for the duration of a compressor cycle. Only useful with a weather-based production predictor; with simple persistence predictors this may wrongly block sunny days.")
 	boolean forecastVetoEnabled() default false;
 

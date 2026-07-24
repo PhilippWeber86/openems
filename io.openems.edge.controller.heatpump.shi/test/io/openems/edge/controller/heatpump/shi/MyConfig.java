@@ -22,6 +22,7 @@ public class MyConfig extends AbstractComponentConfig implements Config {
 		private int maxBatterySupportPower = 0;
 		private int minimumSwitchingTime = 300;
 		private int boostConfirmationSeconds = 0;
+		private int switchOffDelay = 0;
 		private boolean forecastVetoEnabled = false;
 		private boolean runExtensionEnabled = true;
 		private double extensionMinTemperatureDelta = 3.0;
@@ -102,6 +103,11 @@ public class MyConfig extends AbstractComponentConfig implements Config {
 
 		public Builder setBoostConfirmationSeconds(int value) {
 			this.boostConfirmationSeconds = value;
+			return this;
+		}
+
+		public Builder setSwitchOffDelay(int value) {
+			this.switchOffDelay = value;
 			return this;
 		}
 
@@ -214,6 +220,11 @@ public class MyConfig extends AbstractComponentConfig implements Config {
 	@Override
 	public int boostConfirmationSeconds() {
 		return this.builder.boostConfirmationSeconds;
+	}
+
+	@Override
+	public int switchOffDelay() {
+		return this.builder.switchOffDelay;
 	}
 
 	@Override

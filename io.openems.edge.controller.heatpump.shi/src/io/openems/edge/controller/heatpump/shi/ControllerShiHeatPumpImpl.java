@@ -64,6 +64,15 @@ public class ControllerShiHeatPumpImpl extends AbstractOpenemsComponent
 	 */
 	private static final int RUN_EXTENSION_START_MARGIN = 200; // [W]
 
+	/**
+	 * Power margin the coverage may fall short of the heat-pump power before a
+	 * running boost is considered uncovered. Together with the switch-off delay it
+	 * keeps the elevated mode from dropping on brief coverage dips at the limit
+	 * (the soft power limit couples the heat-pump power to the surplus, so the raw
+	 * coverage sits near the heat-pump power without this margin).
+	 */
+	private static final int ELEVATED_HOLD_MARGIN = 200; // [W]
+
 	/** Valid range of the SHI setpoint registers (0.1 degC), from the protocol. */
 	private static final int MIN_HEATING_SETPOINT_DECIDEGREE = 150; // HR10001: 15 degC
 	private static final int MAX_HEATING_SETPOINT_DECIDEGREE = 750; // HR10001: 75 degC
@@ -101,6 +110,9 @@ public class ControllerShiHeatPumpImpl extends AbstractOpenemsComponent
 	private Instant lastModeChange = Instant.MIN;
 	private boolean elevatedModeActive = false;
 	private Instant entryConditionsSince = null;
+	// Start of the current uncovered stretch while elevated (null while covered);
+	// the boost is dropped once this exceeds the configured switch-off delay.
+	private Instant elevatedUncoveredSince = null;
 	private boolean runExtensionActive = false;
 	// End of the last run extension; re-entry is locked until minimumSwitchingTime
 	// after it, so the extension cannot restart immediately after being released.
@@ -183,6 +195,7 @@ public class ControllerShiHeatPumpImpl extends AbstractOpenemsComponent
 			this.runExtensionEndedAt = Instant.now(this.componentManager.getClock());
 		}
 		this.elevatedModeActive = false;
+		this.elevatedUncoveredSince = null;
 		this.runExtensionActive = false;
 	}
 
@@ -298,21 +311,44 @@ public class ControllerShiHeatPumpImpl extends AbstractOpenemsComponent
 		// applyEssSupport), and it stops when exhausted. To gate entry on the
 		// forecast (only start when the sun is predicted to sustain the committed
 		// cycle) enable the optional forecast veto.
+		var now = Instant.now(this.componentManager.getClock());
 		var sunSufficient = surplusPower >= minimumPower;
 		var boostConfirmed = this.updateBoostConfirmation(sunSufficient);
 		var forecastVetoed = !this.elevatedModeActive && sunSufficient
 				&& this.isForecastVetoed(minimumPower);
 		this._setBoostForecastVeto(forecastVetoed);
 
+		// Hold the running boost while its power stays COVERED and drop it only after
+		// coverage has been lost continuously for the switch-off delay. Coverage is the
+		// PV surplus plus the invited battery support (deliverable support in OFFENSIVE,
+		// 0 in CLOUD_BUFFER) compared against the ACTUAL heat-pump power, not a fixed
+		// threshold - so a boost carried by the battery is only dropped once even the
+		// battery can no longer cover it. A small hold margin plus the delay bridge short
+		// dips (clouds, measurement troughs) so the compressor cycle is not aborted on
+		// noise. While the heat pump is momentarily idle the surplus threshold is used
+		// instead, so the elevation is kept as long as the surplus is still worth it.
+		var coverage = surplusPower + invitedSupportPower;
+		var covered = heatPumpPower > 0 //
+				? coverage >= heatPumpPower - ELEVATED_HOLD_MARGIN //
+				: sunSufficient;
+		if (!this.elevatedModeActive || covered) {
+			this.elevatedUncoveredSince = null;
+		} else if (this.elevatedUncoveredSince == null) {
+			this.elevatedUncoveredSince = now;
+		}
+		var sustainedUncovered = this.elevatedUncoveredSince != null
+				&& !this.elevatedUncoveredSince.plusSeconds(this.config.switchOffDelay()).isAfter(now);
+
 		var shouldElevate = this.elevatedModeActive //
-				? sunSufficient //
+				? !sustainedUncovered //
 				: sunSufficient && boostConfirmed && !forecastVetoed;
 		if (this.isHysteresisActive() && shouldElevate != this.elevatedModeActive) {
 			shouldElevate = this.elevatedModeActive;
 		}
 		if (shouldElevate != this.elevatedModeActive) {
 			this.elevatedModeActive = shouldElevate;
-			this.lastModeChange = Instant.now(this.componentManager.getClock());
+			this.lastModeChange = now;
+			this.elevatedUncoveredSince = null;
 		}
 
 		if (this.elevatedModeActive) {
