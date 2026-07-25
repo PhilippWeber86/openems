@@ -92,6 +92,14 @@ public class ControllerShiHeatPumpImpl extends AbstractOpenemsComponent
 	/** The entry confirmation budget decays this many times faster than it builds while the conditions are not met. */
 	private static final int CONFIRMATION_DECAY_FACTOR = 3;
 
+	/**
+	 * Upper bound on the time credited to the hysteresis budgets in one evaluation.
+	 * A larger gap since the previous run (controller not scheduled, restart) is not
+	 * real observed time and is credited as zero, so an unobserved pause cannot
+	 * instantly confirm or drop a boost.
+	 */
+	private static final long MAX_EVALUATION_GAP_MILLIS = 10_000;
+
 	/** Valid range of the SHI setpoint registers (0.1 degC), from the protocol. */
 	private static final int MIN_HEATING_SETPOINT_DECIDEGREE = 150; // HR10001: 15 degC
 	private static final int MAX_HEATING_SETPOINT_DECIDEGREE = 750; // HR10001: 75 degC
@@ -276,6 +284,7 @@ public class ControllerShiHeatPumpImpl extends AbstractOpenemsComponent
 			this._setElevatedModeActive(false);
 			this._setRunExtensionActive(false);
 			this._setFreeBatteryEnergy(0);
+			this._setNightReserveEnergy(null);
 			this._setEssSupportPower(0);
 			return;
 		}
@@ -337,9 +346,12 @@ public class ControllerShiHeatPumpImpl extends AbstractOpenemsComponent
 		// forecast (only start when the sun is predicted to sustain the committed
 		// cycle) enable the optional forecast veto.
 		var now = Instant.now(this.componentManager.getClock());
-		var elapsedMillis = this.lastCoverageEvaluation == null ? 0L
+		var rawElapsedMillis = this.lastCoverageEvaluation == null ? 0L
 				: Math.max(0L, Duration.between(this.lastCoverageEvaluation, now).toMillis());
 		this.lastCoverageEvaluation = now;
+		// Credit only observed time: a large gap (controller not scheduled, restart)
+		// is discarded so an unobserved pause cannot fill the budgets at once.
+		var elapsedMillis = rawElapsedMillis > MAX_EVALUATION_GAP_MILLIS ? 0L : rawElapsedMillis;
 
 		var sunSufficient = surplusPower >= minimumPower;
 		var boostConfirmed = this.updateBoostConfirmation(sunSufficient, elapsedMillis);
@@ -573,8 +585,12 @@ public class ControllerShiHeatPumpImpl extends AbstractOpenemsComponent
 		if (productionPrediction.isEmpty() || consumptionPrediction.isEmpty()) {
 			return false;
 		}
-		var productions = productionPrediction.asArray();
-		var consumptions = consumptionPrediction.asArray();
+		// Align production and consumption by their Instant keys over the commit
+		// window - asArray() would drop interior gaps and shift the two series against
+		// each other. A quarter missing in either forecast is skipped; the veto is
+		// lenient and only fires on a quarter that is actually forecast too weak.
+		var productions = productionPrediction.toMapWithAllQuarters();
+		var consumptions = consumptionPrediction.toMapWithAllQuarters();
 
 		// The veto requires the PV surplus ALONE to sustain the commit - the battery
 		// is not credited here. Battery support during the run is opportunistic (it
@@ -590,15 +606,14 @@ public class ControllerShiHeatPumpImpl extends AbstractOpenemsComponent
 				- (now.get(ChronoField.MINUTE_OF_HOUR) % 15 * 60 + now.getSecond());
 		var overhangSeconds = Math.max(0, commitMinutes * 60 - remainingSecondsCurrentQuarter);
 		var quarters = 1 + (overhangSeconds + 15 * 60 - 1) / (15 * 60);
-		for (var i = 0; i < Math.min(quarters, Math.min(productions.length, consumptions.length)); i++) {
-			var production = productions[i];
-			var consumption = consumptions[i];
-			if (production == null || consumption == null) {
-				continue;
-			}
-			if (production - consumption < minimumPower) {
+		var quarter = DateUtils.roundDownToQuarter(Instant.now(this.componentManager.getClock()));
+		for (var i = 0; i < quarters; i++) {
+			var production = productions.get(quarter);
+			var consumption = consumptions.get(quarter);
+			if (production != null && consumption != null && production - consumption < minimumPower) {
 				return true;
 			}
+			quarter = quarter.plus(15, ChronoUnit.MINUTES);
 		}
 		return false;
 	}
@@ -750,6 +765,10 @@ public class ControllerShiHeatPumpImpl extends AbstractOpenemsComponent
 	 */
 	private int calculateSpareEssEnergy() {
 		this._setNoPredictionAvailable(false);
+		// Reset so every early return below leaves the night reserve "unavailable"
+		// (null) instead of a stale value from a previous successful calculation; the
+		// success path overwrites it with the real reserve.
+		this._setNightReserveEnergy(null);
 		var essSoc = this.sum.getEssSoc().orElse(0);
 		var essCapacity = this.sum.getEssCapacity().orElse(0);
 		if (essCapacity <= 0) {
@@ -868,8 +887,8 @@ public class ControllerShiHeatPumpImpl extends AbstractOpenemsComponent
 	 * counts only its remaining fraction.
 	 *
 	 * @param productionPrediction production prediction per quarter-hour
-	 * @param consumptions         the gap-filled consumption per quarter, keyed by
-	 *                             time (null where still missing)
+	 * @param consumptions         the validated household consumption per quarter,
+	 *                             keyed by time (complete, no null values)
 	 * @param heatPumpPrediction   heat-pump consumption prediction per quarter-hour;
 	 *                             subtracted from consumption when the heat pump is
 	 *                             part of it
@@ -890,11 +909,7 @@ public class ControllerShiHeatPumpImpl extends AbstractOpenemsComponent
 		for (var entry : consumptions.entrySet()) {
 			var durationHours = first ? remainingHoursCurrentQuarter : 0.25F;
 			first = false;
-			var consumption = entry.getValue();
-			if (consumption == null) {
-				flows[i++] = 0;
-				continue;
-			}
+			int consumption = entry.getValue();
 			var productionValue = productions.get(entry.getKey());
 			var production = productionValue != null ? productionValue : 0;
 			var heatPumpValue = heatPumps.get(entry.getKey());

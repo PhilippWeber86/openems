@@ -60,10 +60,10 @@ import org.osgi.service.metatype.annotations.ObjectClassDefinition;
 	@AttributeDefinition(name = "Minimum switching time", description = "Lower bound in seconds between elevated mode changes. The effective hysteresis is the maximum of this value and the compressor cycle limits reported by the heat pump (minimum runtime while elevated, restart lock after leaving).")
 	int minimumSwitchingTime() default 300;
 
-	@AttributeDefinition(name = "Boost confirmation time", description = "Elevated mode starts only after its entry conditions were fulfilled continuously for this many seconds. Filters short surplus spikes that would otherwise trigger a committed compressor cycle.")
+	@AttributeDefinition(name = "Boost confirmation time", description = "Elevated mode starts only after its entry conditions have held for this many seconds in sum. The confirmation accumulates while the conditions hold and decays faster while they do not, so brief surplus dips slow the start without resetting it. Filters short surplus spikes that would otherwise trigger a committed compressor cycle.")
 	int boostConfirmationSeconds() default 240;
 
-	@AttributeDefinition(name = "Switch-off delay", description = "Elevated mode is only left after its coverage (PV surplus plus the invited battery support) has stayed below the heat-pump power continuously for this many seconds. Bridges short surplus dips (clouds, measurement troughs) so a running boost is not aborted on noise. The compressor cycle limits and the minimum switching time still apply on top.")
+	@AttributeDefinition(name = "Switch-off delay", description = "Elevated mode is only left after its coverage (PV surplus plus the invited battery support) has stayed below the heat-pump power for this many seconds in sum. The uncovered time accumulates and decays faster while clearly covered again, so flickering clouds bridge short dips without keeping the boost alive indefinitely. The compressor cycle limits and the minimum switching time still apply on top.")
 	int switchOffDelay() default 120;
 
 	@AttributeDefinition(name = "Forecast veto enabled", description = "Blocks elevated-mode entry if the prediction does not show enough surplus for the duration of a compressor cycle. Only useful with a weather-based production predictor; with simple persistence predictors this may wrongly block sunny days.")
