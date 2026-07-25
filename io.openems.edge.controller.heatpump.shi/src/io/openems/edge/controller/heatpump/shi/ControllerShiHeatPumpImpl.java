@@ -3,6 +3,7 @@ package io.openems.edge.controller.heatpump.shi;
 import static io.openems.edge.common.type.Phase.SingleOrAllPhase.ALL;
 import static io.openems.edge.ess.power.api.Pwr.ACTIVE;
 
+import java.time.Duration;
 import java.time.Instant;
 import java.time.ZonedDateTime;
 import java.time.temporal.ChronoField;
@@ -75,6 +76,22 @@ public class ControllerShiHeatPumpImpl extends AbstractOpenemsComponent
 	 */
 	private static final int ELEVATED_HOLD_MARGIN = 200; // [W]
 
+	/**
+	 * Coverage must exceed the required power by this margin before a running boost
+	 * counts as clearly covered again - the upper edge of the power dead-band. Below
+	 * {@code requiredPower - ELEVATED_HOLD_MARGIN} it is uncovered, above
+	 * {@code requiredPower + ELEVATED_RECOVERY_MARGIN} clearly covered, and in
+	 * between the uncovered time budget is frozen (measurement noise near the limit
+	 * barely moves the state).
+	 */
+	private static final int ELEVATED_RECOVERY_MARGIN = 200; // [W]
+
+	/** The uncovered time budget decays this many times faster than it builds while clearly covered. */
+	private static final int UNCOVERED_RECOVERY_FACTOR = 2;
+
+	/** The entry confirmation budget decays this many times faster than it builds while the conditions are not met. */
+	private static final int CONFIRMATION_DECAY_FACTOR = 3;
+
 	/** Valid range of the SHI setpoint registers (0.1 degC), from the protocol. */
 	private static final int MIN_HEATING_SETPOINT_DECIDEGREE = 150; // HR10001: 15 degC
 	private static final int MAX_HEATING_SETPOINT_DECIDEGREE = 750; // HR10001: 75 degC
@@ -111,10 +128,15 @@ public class ControllerShiHeatPumpImpl extends AbstractOpenemsComponent
 	private int extensionMinDeltaDeciKelvin;
 	private Instant lastModeChange = Instant.MIN;
 	private boolean elevatedModeActive = false;
-	private Instant entryConditionsSince = null;
-	// Start of the current uncovered stretch while elevated (null while covered);
-	// the boost is dropped once this exceeds the configured switch-off delay.
-	private Instant elevatedUncoveredSince = null;
+	// Time-based hysteresis budgets (ms), evaluated against the wall clock rather
+	// than cycle counts so they are independent of the cycle period.
+	// confirmationMillis builds toward the boost confirmation time while the entry
+	// conditions hold; uncoveredMillis builds toward the switch-off delay while a
+	// running boost is uncovered. Both decay instead of resetting, so brief opposite
+	// cycles do not wipe the accumulated progress.
+	private long confirmationMillis = 0;
+	private long uncoveredMillis = 0;
+	private Instant lastCoverageEvaluation = null;
 	private boolean runExtensionActive = false;
 	// End of the last run extension; re-entry is locked until minimumSwitchingTime
 	// after it, so the extension cannot restart immediately after being released.
@@ -197,7 +219,9 @@ public class ControllerShiHeatPumpImpl extends AbstractOpenemsComponent
 			this.runExtensionEndedAt = Instant.now(this.componentManager.getClock());
 		}
 		this.elevatedModeActive = false;
-		this.elevatedUncoveredSince = null;
+		this.confirmationMillis = 0;
+		this.uncoveredMillis = 0;
+		this.lastCoverageEvaluation = null;
 		this.runExtensionActive = false;
 	}
 
@@ -245,7 +269,6 @@ public class ControllerShiHeatPumpImpl extends AbstractOpenemsComponent
 		if (gridPowerValue.isEmpty() || essPowerValue.isEmpty() || heatPumpPowerValue.isEmpty()) {
 			this._setPowerMeasurementUnavailable(true);
 			this.releaseHeatPump();
-			this.entryConditionsSince = null;
 			this._setBoostPending(false);
 			this._setBoostForecastVeto(false);
 			this._setEssForcedExportPower(null);
@@ -314,32 +337,45 @@ public class ControllerShiHeatPumpImpl extends AbstractOpenemsComponent
 		// forecast (only start when the sun is predicted to sustain the committed
 		// cycle) enable the optional forecast veto.
 		var now = Instant.now(this.componentManager.getClock());
+		var elapsedMillis = this.lastCoverageEvaluation == null ? 0L
+				: Math.max(0L, Duration.between(this.lastCoverageEvaluation, now).toMillis());
+		this.lastCoverageEvaluation = now;
+
 		var sunSufficient = surplusPower >= minimumPower;
-		var boostConfirmed = this.updateBoostConfirmation(sunSufficient);
+		var boostConfirmed = this.updateBoostConfirmation(sunSufficient, elapsedMillis);
 		var forecastVetoed = !this.elevatedModeActive && sunSufficient
 				&& this.isForecastVetoed(minimumPower);
 		this._setBoostForecastVeto(forecastVetoed);
 
 		// Hold the running boost while its power stays COVERED and drop it only after
-		// coverage has been lost continuously for the switch-off delay. Coverage is the
-		// PV surplus plus the invited battery support (deliverable support in OFFENSIVE,
-		// 0 in CLOUD_BUFFER) compared against the ACTUAL heat-pump power, not a fixed
-		// threshold - so a boost carried by the battery is only dropped once even the
-		// battery can no longer cover it. A small hold margin plus the delay bridge short
-		// dips (clouds, measurement troughs) so the compressor cycle is not aborted on
-		// noise. While the heat pump is momentarily idle the surplus threshold is used
-		// instead, so the elevation is kept as long as the surplus is still worth it.
+		// coverage has been lost for the switch-off delay in SUM. Coverage is the PV
+		// surplus plus the invited battery support (deliverable in OFFENSIVE, 0 in
+		// CLOUD_BUFFER) compared against the ACTUAL heat-pump power (the minimum power
+		// while the heat pump is momentarily idle), not a fixed threshold - so a boost
+		// carried by the battery is only dropped once even the battery can no longer
+		// cover it. Two hystereses keep it noise-robust: a POWER dead-band (uncovered
+		// only below requiredPower - hold margin, clearly covered only above
+		// requiredPower + recovery margin, frozen in between) and a decaying TIME budget
+		// (uncovered time accumulates and decays faster while clearly covered), so a few
+		// good cycles cannot wipe the whole switch-off progress.
 		var coverage = surplusPower + invitedSupportPower;
-		var covered = heatPumpPower > 0 //
-				? coverage >= heatPumpPower - ELEVATED_HOLD_MARGIN //
-				: sunSufficient;
-		if (!this.elevatedModeActive || covered) {
-			this.elevatedUncoveredSince = null;
-		} else if (this.elevatedUncoveredSince == null) {
-			this.elevatedUncoveredSince = now;
+		var requiredPower = heatPumpPower > 0 ? heatPumpPower : minimumPower;
+		var uncovered = coverage < requiredPower - ELEVATED_HOLD_MARGIN;
+		var clearlyCovered = coverage > requiredPower + ELEVATED_RECOVERY_MARGIN;
+		var switchOffMillis = this.config.switchOffDelay() * 1000L;
+		if (this.elevatedModeActive) {
+			if (uncovered) {
+				this.uncoveredMillis += elapsedMillis;
+			} else if (clearlyCovered) {
+				this.uncoveredMillis -= elapsedMillis * UNCOVERED_RECOVERY_FACTOR;
+			}
+			this.uncoveredMillis = Math.max(0L, Math.min(switchOffMillis, this.uncoveredMillis));
+		} else {
+			this.uncoveredMillis = 0L;
 		}
-		var sustainedUncovered = this.elevatedUncoveredSince != null
-				&& !this.elevatedUncoveredSince.plusSeconds(this.config.switchOffDelay()).isAfter(now);
+		// With a zero delay the drop follows the current uncovered reading immediately;
+		// otherwise the accumulated uncovered time must reach the delay.
+		var sustainedUncovered = switchOffMillis <= 0 ? uncovered : this.uncoveredMillis >= switchOffMillis;
 
 		var shouldElevate = this.elevatedModeActive //
 				? !sustainedUncovered //
@@ -350,7 +386,7 @@ public class ControllerShiHeatPumpImpl extends AbstractOpenemsComponent
 		if (shouldElevate != this.elevatedModeActive) {
 			this.elevatedModeActive = shouldElevate;
 			this.lastModeChange = now;
-			this.elevatedUncoveredSince = null;
+			this.uncoveredMillis = 0L;
 		}
 
 		if (this.elevatedModeActive) {
@@ -492,20 +528,30 @@ public class ControllerShiHeatPumpImpl extends AbstractOpenemsComponent
 	 * do not trigger a committed compressor cycle.
 	 *
 	 * @param entryConditions whether the entry conditions are currently fulfilled
-	 * @return true once the conditions lasted for the confirmation time
+	 * @param elapsedMillis   time since the previous evaluation in ms
+	 * @return true once the conditions held for the confirmation time in sum
 	 */
-	private boolean updateBoostConfirmation(boolean entryConditions) {
-		if (this.elevatedModeActive || !entryConditions) {
-			this.entryConditionsSince = null;
+	private boolean updateBoostConfirmation(boolean entryConditions, long elapsedMillis) {
+		if (this.elevatedModeActive) {
+			this.confirmationMillis = 0;
 			this._setBoostPending(false);
 			return false;
 		}
-		var now = Instant.now(this.componentManager.getClock());
-		if (this.entryConditionsSince == null) {
-			this.entryConditionsSince = now;
+		// Build the confirmation while the entry conditions hold and decay it FASTER
+		// (a start is more consequential than a continuation) while they do not - but
+		// a single bad cycle no longer wipes the whole progress.
+		if (entryConditions) {
+			this.confirmationMillis += elapsedMillis;
+		} else {
+			this.confirmationMillis -= elapsedMillis * CONFIRMATION_DECAY_FACTOR;
 		}
-		var confirmed = !this.entryConditionsSince.plusSeconds(this.config.boostConfirmationSeconds()).isAfter(now);
-		this._setBoostPending(!confirmed);
+		var target = this.config.boostConfirmationSeconds() * 1000L;
+		this.confirmationMillis = Math.max(0L, Math.min(target, this.confirmationMillis));
+		var confirmed = this.confirmationMillis >= target;
+		// Pending reflects the documented meaning "conditions fulfilled, waiting" -
+		// false during a dip even though the accumulated progress only decays, not
+		// resets.
+		this._setBoostPending(entryConditions && !confirmed);
 		return confirmed;
 	}
 

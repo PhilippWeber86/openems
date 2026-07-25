@@ -299,6 +299,74 @@ class ControllerShiHeatPumpImplTest {
 	}
 
 	@Test
+	void testSwitchOffBudgetNotWipedByBriefCoverage() throws Exception {
+		var clock = createDummyClock();
+		var cm = new DummyComponentManager(clock);
+		var sum = new DummySum();
+		new ControllerTest(new ControllerShiHeatPumpImpl()) //
+				.addReference("cm", new DummyConfigurationAdmin()) //
+				.addReference("componentManager", cm) //
+				.addReference("sum", sum) //
+				.addReference("predictorManager", sunnyPredictor(cm, sum, Instant.now(clock))) //
+				.addReference("heatPump", new DummyHeatShiHeatPump("heatPump0")) //
+				.addComponent(new DummyManagedSymmetricEss("ess0") //
+						.setPower(new DummyPower(10_000))) //
+				.activate(MyConfig.create() //
+						.setId("ctrl0") //
+						.setHeatPumpId("heatPump0") //
+						.setEssId("ess0") //
+						.setHeatPumpPosition(HeatPumpPosition.GRID_SIDE_OF_GRID_METER) //
+						.setBatterySupportMode(BatterySupportMode.CLOUD_BUFFER) //
+						.setSwitchOffDelay(120) //
+						.build()) //
+				.next(new TestCase("Enter elevated on strong sun") //
+						.input("_sum", Sum.ChannelId.GRID_ACTIVE_POWER, -4000) //
+						.input("_sum", Sum.ChannelId.ESS_DISCHARGE_POWER, 0) //
+						.input("_sum", Sum.ChannelId.ESS_SOC, 65) //
+						.input("_sum", Sum.ChannelId.ESS_CAPACITY, 10_000) //
+						.input("heatPump0", ElectricityMeter.ChannelId.ACTIVE_POWER, 500) //
+						.output(ControllerShiHeatPump.ChannelId.ELEVATED_MODE_ACTIVE, true)) //
+				.next(new TestCase("Commit window expired, still sunny") //
+						.timeleap(clock, 6, ChronoUnit.MINUTES) //
+						.input("_sum", Sum.ChannelId.GRID_ACTIVE_POWER, -4000) //
+						.input("_sum", Sum.ChannelId.ESS_DISCHARGE_POWER, 0) //
+						.input("_sum", Sum.ChannelId.ESS_SOC, 65) //
+						.input("_sum", Sum.ChannelId.ESS_CAPACITY, 10_000) //
+						.input("heatPump0", ElectricityMeter.ChannelId.ACTIVE_POWER, 500) //
+						.output(ControllerShiHeatPump.ChannelId.ELEVATED_MODE_ACTIVE, true)) //
+				// 100 s uncovered -> budget at 100 s (< 120 s) -> still elevated.
+				.next(new TestCase("100 s cloud: budget building") //
+						.timeleap(clock, 100, ChronoUnit.SECONDS) //
+						.input("_sum", Sum.ChannelId.GRID_ACTIVE_POWER, 0) //
+						.input("_sum", Sum.ChannelId.ESS_DISCHARGE_POWER, 0) //
+						.input("_sum", Sum.ChannelId.ESS_SOC, 65) //
+						.input("_sum", Sum.ChannelId.ESS_CAPACITY, 10_000) //
+						.input("heatPump0", ElectricityMeter.ChannelId.ACTIVE_POWER, 500) //
+						.output(ControllerShiHeatPump.ChannelId.ELEVATED_MODE_ACTIVE, true)) //
+				// 5 s clearly covered -> budget only decays by 5 s x 2 = 10 s (to ~90 s),
+				// it is NOT reset to zero.
+				.next(new TestCase("5 s sun blip: budget decays a little, not wiped") //
+						.timeleap(clock, 5, ChronoUnit.SECONDS) //
+						.input("_sum", Sum.ChannelId.GRID_ACTIVE_POWER, -4000) //
+						.input("_sum", Sum.ChannelId.ESS_DISCHARGE_POWER, 0) //
+						.input("_sum", Sum.ChannelId.ESS_SOC, 65) //
+						.input("_sum", Sum.ChannelId.ESS_CAPACITY, 10_000) //
+						.input("heatPump0", ElectricityMeter.ChannelId.ACTIVE_POWER, 500) //
+						.output(ControllerShiHeatPump.ChannelId.ELEVATED_MODE_ACTIVE, true)) //
+				// 40 s uncovered again -> ~90 + 40 = 130 s >= 120 s -> drop. Had the blip
+				// reset the budget, 40 s alone would not have reached the delay.
+				.next(new TestCase("40 s more cloud: budget reaches delay -> dropped") //
+						.timeleap(clock, 40, ChronoUnit.SECONDS) //
+						.input("_sum", Sum.ChannelId.GRID_ACTIVE_POWER, 0) //
+						.input("_sum", Sum.ChannelId.ESS_DISCHARGE_POWER, 0) //
+						.input("_sum", Sum.ChannelId.ESS_SOC, 65) //
+						.input("_sum", Sum.ChannelId.ESS_CAPACITY, 10_000) //
+						.input("heatPump0", ElectricityMeter.ChannelId.ACTIVE_POWER, 500) //
+						.output(ControllerShiHeatPump.ChannelId.ELEVATED_MODE_ACTIVE, false)) //
+				.deactivate();
+	}
+
+	@Test
 	void testBoostStartsOnSunWithoutFreeEnergy() throws Exception {
 		var clock = createDummyClock();
 		new ControllerTest(new ControllerShiHeatPumpImpl()) //
@@ -428,10 +496,10 @@ class ControllerShiHeatPumpImplTest {
 						.input("heatPump0", ElectricityMeter.ChannelId.ACTIVE_POWER, 500) //
 						.output(ControllerShiHeatPump.ChannelId.ELEVATED_MODE_ACTIVE, false) //
 						.output(ControllerShiHeatPump.ChannelId.BOOST_PENDING, true)) //
-				.next(new TestCase("Surplus dip resets the confirmation") //
+				.next(new TestCase("Surplus dip: no longer pending (progress decays, not reset)") //
 						.input("_sum", Sum.ChannelId.GRID_ACTIVE_POWER, 0) //
 						.output(ControllerShiHeatPump.ChannelId.BOOST_PENDING, false)) //
-				.next(new TestCase("Surplus back: confirmation restarts") //
+				.next(new TestCase("Surplus back: pending again") //
 						.input("_sum", Sum.ChannelId.GRID_ACTIVE_POWER, -4000) //
 						.output(ControllerShiHeatPump.ChannelId.BOOST_PENDING, true)) //
 				.next(new TestCase("Confirmation time passed: elevated mode") //
