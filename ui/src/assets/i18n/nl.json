@@ -326,13 +326,12 @@
         "SELFCONSUMPTION_INFO": "Eigen verbruik geeft het percentage van de momenteel gegenereerde uitvoer aan dat kan worden gebruikt door direct verbruik en opslagbelasting zelf.",
         "SHI_HEAT_PUMP": {
           "BATTERY_SUPPORT_ACTIVE": "Battery supplying heat pump",
-          "BATTERY_SUPPORT_AVAILABLE": "Available battery support",
           "BOOST_ACTIVE": "Boost (PV surplus)",
-          "DISCHARGE_LIMIT": "Storage discharge limit",
           "FREE_BATTERY_ENERGY": "Free battery energy",
           "HEAT_PUMP_POWER": "Heat pump power",
           "NIGHT_RESERVE": "Household night reserve",
-          "NORMAL_MODE": "Normal operation"
+          "NORMAL_MODE": "Normal operation",
+          "RUN_EXTENSION": "Hot-water run extension"
         },
         "SINGLETHRESHOLD": {
           "ABOVE": "Over",

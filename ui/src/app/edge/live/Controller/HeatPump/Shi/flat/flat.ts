@@ -34,6 +34,7 @@ export class ControllerHeatPumpShiComponent extends AbstractFlatWidget {
         }
         const channelAddresses: ChannelAddress[] = [
             new ChannelAddress(this.componentId, "ElevatedModeActive"),
+            new ChannelAddress(this.componentId, "RunExtensionActive"),
             new ChannelAddress(this.componentId, "FreeBatteryEnergy"),
             new ChannelAddress(this.componentId, "EssSupportPower"),
             new ChannelAddress(this.componentId, "NightReserveEnergy"),
@@ -46,9 +47,13 @@ export class ControllerHeatPumpShiComponent extends AbstractFlatWidget {
     }
 
     protected override onCurrentData(currentData: CurrentData): void {
-        this.state = currentData.allComponents[this.componentId + "/ElevatedModeActive"] == 1
-            ? this.translate.instant("EDGE.INDEX.WIDGETS.SHI_HEAT_PUMP.BOOST_ACTIVE")
-            : this.translate.instant("EDGE.INDEX.WIDGETS.SHI_HEAT_PUMP.NORMAL_MODE");
+        let stateKey = "EDGE.INDEX.WIDGETS.SHI_HEAT_PUMP.NORMAL_MODE";
+        if (currentData.allComponents[this.componentId + "/ElevatedModeActive"] == 1) {
+            stateKey = "EDGE.INDEX.WIDGETS.SHI_HEAT_PUMP.BOOST_ACTIVE";
+        } else if (currentData.allComponents[this.componentId + "/RunExtensionActive"] == 1) {
+            stateKey = "EDGE.INDEX.WIDGETS.SHI_HEAT_PUMP.RUN_EXTENSION";
+        }
+        this.state = this.translate.instant(stateKey);
         this.freeBatteryEnergy = currentData.allComponents[this.componentId + "/FreeBatteryEnergy"] ?? null;
         this.essSupportPower = currentData.allComponents[this.componentId + "/EssSupportPower"] ?? null;
         this.nightReserveEnergy = currentData.allComponents[this.componentId + "/NightReserveEnergy"] ?? null;
