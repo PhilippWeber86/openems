@@ -31,6 +31,7 @@ import io.openems.common.utils.DateUtils;
 import io.openems.edge.common.component.AbstractOpenemsComponent;
 import io.openems.edge.common.component.ComponentManager;
 import io.openems.edge.common.component.OpenemsComponent;
+import io.openems.edge.common.cycle.Cycle;
 import io.openems.edge.common.sum.Sum;
 import io.openems.edge.controller.api.Controller;
 import io.openems.edge.ess.api.ManagedSymmetricEss;
@@ -93,12 +94,16 @@ public class ControllerShiHeatPumpImpl extends AbstractOpenemsComponent
 	private static final int CONFIRMATION_DECAY_FACTOR = 3;
 
 	/**
-	 * Upper bound on the time credited to the hysteresis budgets in one evaluation.
-	 * A larger gap since the previous run (controller not scheduled, restart) is not
-	 * real observed time and is credited as zero, so an unobserved pause cannot
-	 * instantly confirm or drop a boost.
+	 * A gap longer than {@code max(MIN_EVALUATION_GAP_MILLIS, cycleTime x
+	 * GAP_CYCLE_FACTOR)} since the previous run (controller not scheduled, restart)
+	 * is treated as a discontinuity: the unobserved time is not credited AND the
+	 * progress collected before it is reset, so neither an entry nor a drop is based
+	 * on stale confirmation / switch-off progress. Deriving the threshold from the
+	 * core cycle time keeps the budgets advancing even at long cycle times; the floor
+	 * keeps normal cycle jitter from being mistaken for a gap.
 	 */
-	private static final long MAX_EVALUATION_GAP_MILLIS = 10_000;
+	private static final long MIN_EVALUATION_GAP_MILLIS = 10_000;
+	private static final int GAP_CYCLE_FACTOR = 4;
 
 	/** Valid range of the SHI setpoint registers (0.1 degC), from the protocol. */
 	private static final int MIN_HEATING_SETPOINT_DECIDEGREE = 150; // HR10001: 15 degC
@@ -122,6 +127,9 @@ public class ControllerShiHeatPumpImpl extends AbstractOpenemsComponent
 
 	@Reference
 	private Sum sum;
+
+	@Reference(policy = ReferencePolicy.DYNAMIC, policyOption = ReferencePolicyOption.GREEDY, cardinality = ReferenceCardinality.OPTIONAL)
+	private volatile Cycle cycle;
 
 	@Reference(policy = ReferencePolicy.DYNAMIC, policyOption = ReferencePolicyOption.GREEDY, cardinality = ReferenceCardinality.OPTIONAL)
 	private volatile PredictorManager predictorManager;
@@ -299,14 +307,14 @@ public class ControllerShiHeatPumpImpl extends AbstractOpenemsComponent
 		// measurement, so it must be added back to avoid eating its own surplus.
 		// - GRID_SIDE_OF_GRID_METER: heat pump consumption is invisible at the
 		// grid meter and served by whatever this segment exports.
-		var surplusPower = switch (this.config.heatPumpPosition()) {
+		final var surplusPower = switch (this.config.heatPumpPosition()) {
 		case BEHIND_GRID_METER -> Math.max(0, -gridActivePower - essDischargePower + heatPumpPower);
 		case GRID_SIDE_OF_GRID_METER -> Math.max(0, -gridActivePower - essDischargePower);
 		};
 
 		// The heat pump reports its minimum predicted power consumption (IR10302);
 		// starting elevated mode below it would only shift grid consumption
-		var minimumPower = Math.max(this.config.minimumSurplusPowerForElevatedMode(),
+		final var minimumPower = Math.max(this.config.minimumSurplusPowerForElevatedMode(),
 				this.heatPump.getMinPredictedActivePower().orElse(0));
 
 		// Energy release gate: as long as free battery energy above the night
@@ -349,9 +357,20 @@ public class ControllerShiHeatPumpImpl extends AbstractOpenemsComponent
 		var rawElapsedMillis = this.lastCoverageEvaluation == null ? 0L
 				: Math.max(0L, Duration.between(this.lastCoverageEvaluation, now).toMillis());
 		this.lastCoverageEvaluation = now;
-		// Credit only observed time: a large gap (controller not scheduled, restart)
-		// is discarded so an unobserved pause cannot fill the budgets at once.
-		var elapsedMillis = rawElapsedMillis > MAX_EVALUATION_GAP_MILLIS ? 0L : rawElapsedMillis;
+		var cycleTimeMillis = this.cycle != null ? this.cycle.getCycleTime() : Cycle.DEFAULT_CYCLE_TIME;
+		var maxGapMillis = Math.max(MIN_EVALUATION_GAP_MILLIS, (long) cycleTimeMillis * GAP_CYCLE_FACTOR);
+		long elapsedMillis;
+		if (rawElapsedMillis > maxGapMillis) {
+			// Large gap (controller not scheduled, restart): discard the unobserved
+			// time AND reset the accumulated progress, so the situation is re-evaluated
+			// from the fresh readings rather than an entry or drop firing on stale
+			// budgets (e.g. a near-complete confirmation surviving a ten-minute pause).
+			this.confirmationMillis = 0;
+			this.uncoveredMillis = 0;
+			elapsedMillis = 0L;
+		} else {
+			elapsedMillis = rawElapsedMillis;
+		}
 
 		var sunSufficient = surplusPower >= minimumPower;
 		var boostConfirmed = this.updateBoostConfirmation(sunSufficient, elapsedMillis);

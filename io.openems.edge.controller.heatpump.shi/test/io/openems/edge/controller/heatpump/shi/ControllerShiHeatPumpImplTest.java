@@ -521,10 +521,12 @@ class ControllerShiHeatPumpImplTest {
 	}
 
 	@Test
-	void testLargeSchedulingGapNotCreditedToConfirmation() throws Exception {
+	void testLargeGapResetsConfirmationProgress() throws Exception {
 		var clock = createDummyClock();
 		var cm = new DummyComponentManager(clock);
 		var sum = new DummySum();
+		// No Cycle reference -> the gap threshold falls back to the floor (10 s), so
+		// the <=10 s steps below are credited while the 10-minute gap is a discontinuity.
 		new ControllerTest(new ControllerShiHeatPumpImpl()) //
 				.addReference("cm", new DummyConfigurationAdmin()) //
 				.addReference("componentManager", cm) //
@@ -538,20 +540,46 @@ class ControllerShiHeatPumpImplTest {
 						.setHeatPumpId("heatPump0") //
 						.setEssId("ess0") //
 						.setHeatPumpPosition(HeatPumpPosition.GRID_SIDE_OF_GRID_METER) //
-						.setBoostConfirmationSeconds(240) //
+						.setBoostConfirmationSeconds(20) //
 						.build()) //
-				.next(new TestCase("Conditions fulfilled: not yet confirmed") //
+				.next(new TestCase("Conditions fulfilled: confirmation starts at 0") //
 						.input("_sum", Sum.ChannelId.GRID_ACTIVE_POWER, -4000) //
 						.input("_sum", Sum.ChannelId.ESS_DISCHARGE_POWER, 0) //
 						.input("_sum", Sum.ChannelId.ESS_SOC, 65) //
 						.input("_sum", Sum.ChannelId.ESS_CAPACITY, 10_000) //
 						.input("heatPump0", ElectricityMeter.ChannelId.ACTIVE_POWER, 500) //
 						.output(ControllerShiHeatPump.ChannelId.ELEVATED_MODE_ACTIVE, false)) //
-				// A 10-minute gap (controller not scheduled) exceeds the max credited
-				// time -> not counted toward the 240 s confirmation, so the boost does
-				// not start instantly on the first run back.
-				.next(new TestCase("Large scheduling gap not credited: still not elevated") //
+				.next(new TestCase("After 10 s: 10/20 s confirmed, still not elevated") //
+						.timeleap(clock, 10, ChronoUnit.SECONDS) //
+						.input("_sum", Sum.ChannelId.GRID_ACTIVE_POWER, -4000) //
+						.input("_sum", Sum.ChannelId.ESS_DISCHARGE_POWER, 0) //
+						.input("_sum", Sum.ChannelId.ESS_SOC, 65) //
+						.input("_sum", Sum.ChannelId.ESS_CAPACITY, 10_000) //
+						.input("heatPump0", ElectricityMeter.ChannelId.ACTIVE_POWER, 500) //
+						.output(ControllerShiHeatPump.ChannelId.ELEVATED_MODE_ACTIVE, false)) //
+				.next(new TestCase("After 8 s more: 18/20 s confirmed, nearly there") //
+						.timeleap(clock, 8, ChronoUnit.SECONDS) //
+						.input("_sum", Sum.ChannelId.GRID_ACTIVE_POWER, -4000) //
+						.input("_sum", Sum.ChannelId.ESS_DISCHARGE_POWER, 0) //
+						.input("_sum", Sum.ChannelId.ESS_SOC, 65) //
+						.input("_sum", Sum.ChannelId.ESS_CAPACITY, 10_000) //
+						.input("heatPump0", ElectricityMeter.ChannelId.ACTIVE_POWER, 500) //
+						.output(ControllerShiHeatPump.ChannelId.ELEVATED_MODE_ACTIVE, false)) //
+				// A 10-minute gap (controller not scheduled) is a discontinuity: it not
+				// only fails to credit the unobserved time, it also resets the 18 s of
+				// progress collected before it.
+				.next(new TestCase("Large gap resets progress: still not elevated") //
 						.timeleap(clock, 10, ChronoUnit.MINUTES) //
+						.input("_sum", Sum.ChannelId.GRID_ACTIVE_POWER, -4000) //
+						.input("_sum", Sum.ChannelId.ESS_DISCHARGE_POWER, 0) //
+						.input("_sum", Sum.ChannelId.ESS_SOC, 65) //
+						.input("_sum", Sum.ChannelId.ESS_CAPACITY, 10_000) //
+						.input("heatPump0", ElectricityMeter.ChannelId.ACTIVE_POWER, 500) //
+						.output(ControllerShiHeatPump.ChannelId.ELEVATED_MODE_ACTIVE, false)) //
+				// Only 10 s have accrued since the reset (not 18 + 10 = 28), so the boost
+				// is NOT confirmed yet -> proves the progress was cleared, not just paused.
+				.next(new TestCase("10 s after reset: only 10/20 s, still not elevated") //
+						.timeleap(clock, 10, ChronoUnit.SECONDS) //
 						.input("_sum", Sum.ChannelId.GRID_ACTIVE_POWER, -4000) //
 						.input("_sum", Sum.ChannelId.ESS_DISCHARGE_POWER, 0) //
 						.input("_sum", Sum.ChannelId.ESS_SOC, 65) //
@@ -602,6 +630,60 @@ class ControllerShiHeatPumpImplTest {
 						.input("heatPump0", ElectricityMeter.ChannelId.ACTIVE_POWER, 500) //
 						.output(ControllerShiHeatPump.ChannelId.ELEVATED_MODE_ACTIVE, false) //
 						.output(ControllerShiHeatPump.ChannelId.BOOST_FORECAST_VETO, true)) //
+				.deactivate();
+	}
+
+	@Test
+	void testForecastVetoAlignsGapsByTimeNotIndex() throws Exception {
+		var clock = createDummyClock();
+		var cm = new DummyComponentManager(clock);
+		var sum = new DummySum();
+		// Production has a gap in quarter 1, consumption a gap in quarter 2 (different
+		// positions). Aligned by time, every quarter present in BOTH forecasts is
+		// strong (production - consumption >> minimum power), so the veto must NOT fire.
+		// If the two series were instead aligned by array index (asArray dropping the
+		// gaps), consumption would shift left and the strong-production quarter would be
+		// paired with the 5000 W consumption of quarter 1 -> a false veto. Asserting the
+		// veto stays off guards against that regression.
+		var prod = new Integer[96];
+		var cons = new Integer[96];
+		Arrays.fill(prod, 3000);
+		Arrays.fill(cons, 400);
+		prod[1] = null; // production gap at quarter 1
+		prod[2] = 600; // still fine vs. its own consumption (400), but a trap under index shift
+		cons[1] = 5000; // ignored under time alignment (production is a gap in this quarter)
+		cons[2] = null; // consumption gap at quarter 2
+		var predictorManager = new DummyPredictorManager(//
+				new DummyPredictor("predictor0", cm, Prediction.from(sum, SUM_PRODUCTION_ACTIVE_POWER, Instant.now(clock),
+						prod), SUM_PRODUCTION_ACTIVE_POWER),
+				new DummyPredictor("predictor1", cm, Prediction.from(sum, SUM_CONSUMPTION_ACTIVE_POWER, Instant.now(clock),
+						cons), SUM_CONSUMPTION_ACTIVE_POWER));
+		new ControllerTest(new ControllerShiHeatPumpImpl()) //
+				.addReference("cm", new DummyConfigurationAdmin()) //
+				.addReference("componentManager", cm) //
+				.addReference("sum", sum) //
+				.addReference("predictorManager", predictorManager) //
+				.addReference("heatPump", new DummyHeatShiHeatPump("heatPump0")) //
+				.addComponent(new DummyManagedSymmetricEss("ess0") //
+						.setPower(new DummyPower(10_000))) //
+				.activate(MyConfig.create() //
+						.setId("ctrl0") //
+						.setHeatPumpId("heatPump0") //
+						.setEssId("ess0") //
+						.setHeatPumpPosition(HeatPumpPosition.GRID_SIDE_OF_GRID_METER) //
+						.setForecastVetoEnabled(true) //
+						.setMinimumSurplusPowerForElevatedMode(500) //
+						// Long commit window so it spans the quarters holding the two gaps.
+						.setMinimumSwitchingTime(5400) //
+						.build()) //
+				.next(new TestCase("Gaps in different quarters: no false veto, boost proceeds") //
+						.input("_sum", Sum.ChannelId.GRID_ACTIVE_POWER, -4000) //
+						.input("_sum", Sum.ChannelId.ESS_DISCHARGE_POWER, 0) //
+						.input("_sum", Sum.ChannelId.ESS_SOC, 65) //
+						.input("_sum", Sum.ChannelId.ESS_CAPACITY, 10_000) //
+						.input("heatPump0", ElectricityMeter.ChannelId.ACTIVE_POWER, 500) //
+						.output(ControllerShiHeatPump.ChannelId.BOOST_FORECAST_VETO, false) //
+						.output(ControllerShiHeatPump.ChannelId.ELEVATED_MODE_ACTIVE, true)) //
 				.deactivate();
 	}
 
