@@ -1,5 +1,5 @@
 import { CommonModule } from "@angular/common";
-import { Component } from "@angular/core";
+import { ChangeDetectionStrategy, Component } from "@angular/core";
 import { IonicModule } from "@ionic/angular";
 import { TranslateModule } from "@ngx-translate/core";
 import { ComponentsModule } from "src/app/shared/components/components.module";
@@ -10,6 +10,7 @@ import { ChannelAddress, CurrentData, EdgeConfig } from "src/app/shared/shared";
     selector: "oe-controller-heatpump-shi",
     templateUrl: "./flat.html",
     standalone: true,
+    changeDetection: ChangeDetectionStrategy.Eager,
     imports: [
         CommonModule,
         IonicModule,
