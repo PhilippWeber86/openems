@@ -85,6 +85,11 @@ class ControllerShiHeatPumpImplTest {
 	 * deficit exceeds a low morning SoC, so MAX_DEFICIT reserves everything, while
 	 * the daytime PV refills the battery, so SOC_TRAJECTORY frees the morning
 	 * energy.
+	 *
+	 * @param cm  the {@link DummyComponentManager}
+	 * @param sum the {@link DummySum}
+	 * @param now the start of the forecast
+	 * @return a {@link DummyPredictorManager} with the described forecast
 	 */
 	private static DummyPredictorManager morningRecoveryPredictor(DummyComponentManager cm, DummySum sum, Instant now)
 			throws OpenemsNamedException {
@@ -592,8 +597,8 @@ class ControllerShiHeatPumpImplTest {
 	@Test
 	void testForecastVetoBlocksEntry() throws Exception {
 		var clock = createDummyClock();
-		var cm = new DummyComponentManager(clock);
-		var sum = new DummySum();
+		final var cm = new DummyComponentManager(clock);
+		final var sum = new DummySum();
 		// Production is 0 for the current quarter (cloud now) but high afterwards, so
 		// the night reserve stays small while the veto - which requires the sun alone
 		// to sustain the commit - fires on the current quarter.
@@ -636,8 +641,8 @@ class ControllerShiHeatPumpImplTest {
 	@Test
 	void testForecastVetoAlignsGapsByTimeNotIndex() throws Exception {
 		var clock = createDummyClock();
-		var cm = new DummyComponentManager(clock);
-		var sum = new DummySum();
+		final var cm = new DummyComponentManager(clock);
+		final var sum = new DummySum();
 		// Production has a gap in quarter 1, consumption a gap in quarter 2 (different
 		// positions). Aligned by time, every quarter present in BOTH forecasts is
 		// strong (production - consumption >> minimum power), so the veto must NOT fire.
@@ -1282,8 +1287,8 @@ class ControllerShiHeatPumpImplTest {
 	@Test
 	void testUnmanagedGapFilledFromTotalConsumption() throws Exception {
 		var clock = createDummyClock();
-		var cm = new DummyComponentManager(clock);
-		var sum = new DummySum();
+		final var cm = new DummyComponentManager(clock);
+		final var sum = new DummySum();
 		var prod = new Integer[96];
 		var unmanaged = new Integer[96];
 		var total = new Integer[96];
@@ -1323,8 +1328,8 @@ class ControllerShiHeatPumpImplTest {
 	@Test
 	void testBothConsumptionForecastsGapFailsSafe() throws Exception {
 		var clock = createDummyClock();
-		var cm = new DummyComponentManager(clock);
-		var sum = new DummySum();
+		final var cm = new DummyComponentManager(clock);
+		final var sum = new DummySum();
 		var prod = new Integer[96];
 		var unmanaged = new Integer[96];
 		var total = new Integer[96];
@@ -1366,8 +1371,8 @@ class ControllerShiHeatPumpImplTest {
 	@Test
 	void testFallbackConsumptionEntersNightReserve() throws Exception {
 		var clock = createDummyClock();
-		var cm = new DummyComponentManager(clock);
-		var sum = new DummySum();
+		final var cm = new DummyComponentManager(clock);
+		final var sum = new DummySum();
 		var prod = new Integer[96];
 		var unmanaged = new Integer[96];
 		var total = new Integer[96];
@@ -1668,8 +1673,8 @@ class ControllerShiHeatPumpImplTest {
 	@Test
 	void testConsumptionForecastGapDisablesSupport() throws Exception {
 		var clock = createDummyClock();
-		var cm = new DummyComponentManager(clock);
-		var sum = new DummySum();
+		final var cm = new DummyComponentManager(clock);
+		final var sum = new DummySum();
 		// Full production forecast, but the consumption forecast has a gap (a null
 		// quarter) and no Unmanaged forecast to fall back to, so the missing quarter
 		// stays unavailable -> the forecast counts as incomplete and no battery energy
