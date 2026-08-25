@@ -1,0 +1,42 @@
+= Novelan / Alpha Innotec Smart Home Interface (SHI) Heat Pump
+
+Modbus TCP integration for heat pumps by ait-deutschland GmbH (Novelan, Alpha Innotec) via the Smart Home Interface (SHI).
+
+== Overview
+
+This bundle connects heat pumps with the WPR-NET heating controller (software >= V3.90.1) via the Smart Home Interface, a Modbus TCP interface documented in ait-deutschland document no. 83026903aDE. It reads the electrical power consumption and operation status of the heat pump and allows external influence on heating and hot-water setpoints as well as a power consumption limit.
+
+== Supported Devices
+
+.Novelan / Alpha Innotec heat pumps with WPR-NET controller
+* **Communication**: Modbus TCP, port 502, Unit-ID 1 (default)
+* **Requires**: WPR-NET software version >= V3.90.1, SHI enabled
+* **Note**: The SHI resets all externally written values to defaults if no Modbus request is received for 15 minutes. OpenEMS polls every cycle, which keeps the connection alive.
+
+== Components
+
+=== Heat SHI Heat Pump
+
+*Name*: Heat SHI Heat Pump
+
+*Factory-PID*: `Heat.Shi.HeatPump`
+
+Implements `ElectricityMeter` with configurable Meter-Type (must match the `Heat pump position` of the SHI Heat Pump Controller if one is configured):
+
+* `CONSUMPTION_METERED` (default): heat pump is connected behind the grid meter, its consumption is included in the grid measurement.
+* `CONSUMPTION_NOT_METERED`: heat pump is connected grid-side of the grid meter and therefore not part of the calculated `_sum` consumption. Use this if the battery must not see the heat pump at the balancing point. Note: the UI then does not list the heat pump in the consumption widget, but "other consumption" stays correct.
+
+Mapped registers:
+
+* HR10000/HR10001/HR10002: heating influence mode / return temperature setpoint / offset
+* HR10005/HR10006/HR10007: hot-water influence mode / temperature setpoint / offset
+* HR10040/HR10041: limitation-power-consumption mode (0=none, 1=soft, 2=hard for §14a EnWG) / power limit (0.1 kW resolution, mapped to W)
+* IR10000-IR10004: heat pump status, operating mode, heating status, hot-water status
+* IR10301: current electrical power consumption (0.1 kW resolution, mapped to `ActivePower` in W)
+* IR10302: minimum predicted electrical power consumption (0.1 kW resolution, mapped to `MinPredictedActivePower` in W; raw 32767 = data point not configured, mapped to null)
+
+With `readOnly` enabled the component only reads values and registers no Modbus write tasks.
+
+== Code
+
+https://github.com/OpenEMS/openems/tree/develop/io.openems.edge.heat.shi[Source Code icon:github[]]
