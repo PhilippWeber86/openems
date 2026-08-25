@@ -328,6 +328,15 @@
         },
         "PHASES_INFO": "Součet jednotlivých fází se může z technických důvodů mírně lišit od celkového počtu.",
         "SELFCONSUMPTION_INFO": "Vlastní spotřeba označuje procento aktuálně generovaného výstupu, který lze použít přímou spotřebou a samotným zatížením úložiště.",
+        "SHI_HEAT_PUMP": {
+          "BATTERY_SUPPORT_ACTIVE": "Battery supplying heat pump",
+          "BOOST_ACTIVE": "Boost (PV surplus)",
+          "FREE_BATTERY_ENERGY": "Free battery energy",
+          "HEAT_PUMP_POWER": "Heat pump power",
+          "NIGHT_RESERVE": "Household night reserve",
+          "NORMAL_MODE": "Normal operation",
+          "RUN_EXTENSION": "Hot-water run extension"
+        },
         "SINGLETHRESHOLD": {
           "ABOVE": "O",
           "BEHAVIOUR": "Chování",

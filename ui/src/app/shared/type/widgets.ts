@@ -9,6 +9,7 @@ import { SharedControllerChpSoc } from "src/app/edge/live/Controller/ChpSoc/shar
 import { SharedControllerEnerixControl } from "src/app/edge/live/Controller/EnerixControl/shared/shared";
 import { ControllerEvseSingleShared } from "src/app/edge/live/Controller/Evse/shared/shared";
 import { SharedControllerHeat } from "src/app/edge/live/Controller/Heat/shared/shared";
+import { SharedControllerHeatPumpShi } from "src/app/edge/live/Controller/HeatPump/Shi/shared/shared";
 import { ControllerBraiinsShared } from "src/app/edge/live/Controller/Io/Braiins/shared/shared";
 import { SharedIoChannelSingleThreshold } from "src/app/edge/live/Controller/Io/ChannelSingleThreshold/shared/shared";
 import { SharedControllerIoFixDigitalOutput } from "src/app/edge/live/Controller/Io/FixDigitalOutput/shared/shared";
@@ -121,6 +122,8 @@ export class Widgets {
                 return SharedControllerIoHeatingElement.getNavigationTree(translate, component);
             case "Controller.Io.HeatPump.SgReady":
                 return SharedControllerIoHeatpump.getNavigationTree(translate, component, edge);
+            case "Controller.HeatPump.Shi":
+                return SharedControllerHeatPumpShi.getNavigationTree(translate, component);
             case "Heat.Askoma":
                 return SharedControllerHeat.getNavigationTree(translate, component, true);
             case "Heat.MyPv":
