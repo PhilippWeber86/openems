@@ -516,6 +516,15 @@
                     "CHART_TITLE_ADMIN": "Planned Schedule (Only for Admins)"
                 },
                 "SELFCONSUMPTION_INFO": "Self-consumption indicates the percentage of the currently generated output that can be used by direct consumption and storage charging.",
+                "SHI_HEAT_PUMP": {
+                    "BATTERY_SUPPORT_ACTIVE": "Battery supplying heat pump",
+                    "BOOST_ACTIVE": "Boost (PV surplus)",
+                    "FREE_BATTERY_ENERGY": "Free battery energy",
+                    "HEAT_PUMP_POWER": "Heat pump power",
+                    "NIGHT_RESERVE": "Household night reserve",
+                    "NORMAL_MODE": "Normal operation",
+                    "RUN_EXTENSION": "Hot-water run extension"
+                },
                 "SINGLETHRESHOLD": {
                     "ABOVE": "Above",
                     "BEHAVIOUR": "Behaviour",

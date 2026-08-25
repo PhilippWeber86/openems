@@ -516,6 +516,15 @@
                     "CHART_TITLE_ADMIN": "Aktueller Fahrplan (Nur für Admins)"
                 },
                 "SELFCONSUMPTION_INFO": "Der Eigenverbrauch gibt an zu wie viel Prozent die aktuell erzeugte Leistung durch direkten Verbrauch und durch Speicherbeladung selbst genutzt wird.",
+                "SHI_HEAT_PUMP": {
+                    "BATTERY_SUPPORT_ACTIVE": "Akku liefert an Wärmepumpe",
+                    "BOOST_ACTIVE": "Boost (PV-Überschuss)",
+                    "FREE_BATTERY_ENERGY": "Freie Akkuenergie",
+                    "HEAT_PUMP_POWER": "Leistung Wärmepumpe",
+                    "NIGHT_RESERVE": "Nachtreserve Haushalt",
+                    "NORMAL_MODE": "Normalbetrieb",
+                    "RUN_EXTENSION": "Warmwasser-Laufverlängerung"
+                },
                 "SINGLETHRESHOLD": {
                     "ABOVE": "Über",
                     "BEHAVIOUR": "Verhalten",

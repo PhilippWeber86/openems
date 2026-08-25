@@ -322,6 +322,15 @@
         },
         "PHASES_INFO": "Pour des raisons technique, la somme des phases individuelles peut être légerement différente de la somme totale.",
         "SELFCONSUMPTION_INFO": "L'auto-consommation indique le pourcentage de la puissance générée actuellement qui peut être utilisé par une consommation directe et une recharge du stockage.",
+        "SHI_HEAT_PUMP": {
+          "BATTERY_SUPPORT_ACTIVE": "Battery supplying heat pump",
+          "BOOST_ACTIVE": "Boost (PV surplus)",
+          "FREE_BATTERY_ENERGY": "Free battery energy",
+          "HEAT_PUMP_POWER": "Heat pump power",
+          "NIGHT_RESERVE": "Household night reserve",
+          "NORMAL_MODE": "Normal operation",
+          "RUN_EXTENSION": "Hot-water run extension"
+        },
         "SINGLETHRESHOLD": {
           "ABOVE": "Above",
           "BEHAVIOUR": "Behaviour",

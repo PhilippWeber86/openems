@@ -41,6 +41,7 @@ export enum WidgetFactory {
     "Controller.IO.HeatingElement",
     "Controller.IO.Heating.Room",
     "Controller.Io.HeatPump.SgReady",
+    "Controller.HeatPump.Shi",
     "Controller.Heat.Heatingelement",
     "Controller.Symmetric.PeakShaving",
     "Controller.Symmetric.Balancing",

@@ -56,6 +56,7 @@ import { ControllerHeatingElementHistoryComponent } from "src/app/edge/live/Cont
 import { ControllerIoHeatingElementHomeComponent } from "src/app/edge/live/Controller/Io/HeatingElement/new-navigation/new-navigation";
 import { ControllerIoHeatingElementSettingsComponent } from "src/app/edge/live/Controller/Io/HeatingElement/settings/settings";
 import { ControllerIoHeatpumpHistoryComponent } from "src/app/edge/live/Controller/Io/Heatpump/history/new-navigation/new-navigation";
+import { ControllerHeatPumpShiHomeComponent } from "src/app/edge/live/Controller/HeatPump/Shi/new-navigation/new-navigation";
 import { ControllerIoHeatpumpHomeComponent } from "src/app/edge/live/Controller/Io/Heatpump/new-navigation/new-navigation";
 import { ControllerIoHeatpumpSettingsComponent } from "src/app/edge/live/Controller/Io/Heatpump/settings/settings";
 import { ControllerModbusTcpApiDetailsComponent } from "src/app/edge/live/Controller/ModbusTcpApi/details/details";
@@ -317,6 +318,10 @@ export const newNavigationRoutes: Routes = [
     {
         path: "controller/heatpump/:componentId",
         component: ControllerIoHeatpumpHomeComponent,
+    },
+    {
+        path: "controller/heatpump-shi/:componentId",
+        component: ControllerHeatPumpShiHomeComponent,
     },
     {
         path: "controller/heatpump/:componentId/settings",
