@@ -430,7 +430,11 @@ public class ControllerShiHeatPumpImpl extends AbstractOpenemsComponent
 			this.applyElevatedMode(Math.max(minimumPower, surplusPower + invitedSupportPower));
 		} else {
 			this.handleRunExtension(surplusPower, invitedSupportPower, heatPumpPower);
-			this.applyNormalMode();
+			// The soft limit of a self-started run follows the PASSIVE support
+			// (maxSupportPower), which pays for such a run in BOTH battery-support
+			// modes - unlike the invited support, which only drives the boost and the
+			// run extension and is 0 in CLOUD_BUFFER.
+			this.applyNormalMode(surplusPower + maxSupportPower, minimumPower);
 		}
 		var appliedSupport = this.applyEssSupport(maxSupportPower, surplusPower, heatPumpPower);
 
@@ -521,7 +525,27 @@ public class ControllerShiHeatPumpImpl extends AbstractOpenemsComponent
 		this.heatPump.setPcLimit(Math.max(0, Math.min(MAX_PC_LIMIT, availablePower)));
 	}
 
-	private void applyNormalMode() throws OpenemsNamedException {
+	/**
+	 * Normal mode: the setpoints are released - a run the heat pump started on its
+	 * own (heating in particular) must not be elevated, that would overheat the
+	 * house. The soft power limit is still written while such a run is active, so
+	 * the heat pump can modulate down onto the power PV and the battery actually
+	 * pay for (see the passive support layer), instead of taking the difference
+	 * from the grid. The soft limit is a recommendation: the heat pump discards it
+	 * once its temperature deviates too far from its setpoint, so a genuine heat
+	 * demand is protected by the device itself. The case that must be avoided is
+	 * the opposite one - close to the setpoint the heat pump does obey, and a limit
+	 * below its minimum sensible power would push it into a compressor stop or
+	 * short cycling. The limit is therefore written exclusively while the coverage
+	 * carries at least the minimum power, and released entirely below that, where
+	 * a "use almost nothing" recommendation would be dishonest anyway.
+	 *
+	 * @param coveredPower the power covered by PV surplus plus deliverable battery
+	 *                     support in W
+	 * @param minimumPower the minimum sensible heat-pump power in W
+	 * @throws OpenemsNamedException on write error
+	 */
+	private void applyNormalMode(int coveredPower, int minimumPower) throws OpenemsNamedException {
 		if (this.heatPump.getHeatingStatus().orElse(0) > 0) {
 			this.heatPump.setHeatingMode(HeatShiHeatPump.MODE_NONE);
 		}
@@ -531,8 +555,15 @@ public class ControllerShiHeatPumpImpl extends AbstractOpenemsComponent
 			if (this.heatPump.getHotWaterStatus().orElse(0) > 0) {
 				this.heatPump.setHotWaterMode(HeatShiHeatPump.MODE_NONE);
 			}
-			this.heatPump.setLpcMode(HeatShiHeatPump.LPC_MODE_NONE);
-			this.heatPump.setPcLimit(0);
+			var naturalRunActive = this.heatPump.getHeatingStatus().orElse(0) == HeatShiHeatPump.STATUS_ACTIVE
+					|| this.heatPump.getHotWaterStatus().orElse(0) == HeatShiHeatPump.STATUS_ACTIVE;
+			if (naturalRunActive && coveredPower >= minimumPower) {
+				this.heatPump.setLpcMode(HeatShiHeatPump.LPC_MODE_SOFT);
+				this.heatPump.setPcLimit(Math.min(MAX_PC_LIMIT, coveredPower));
+			} else {
+				this.heatPump.setLpcMode(HeatShiHeatPump.LPC_MODE_NONE);
+				this.heatPump.setPcLimit(0);
+			}
 		}
 	}
 

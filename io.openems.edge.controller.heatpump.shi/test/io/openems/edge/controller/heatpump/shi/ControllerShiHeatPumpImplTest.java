@@ -975,6 +975,70 @@ class ControllerShiHeatPumpImplTest {
 	}
 
 	@Test
+	void testSoftLimitWrittenOnNaturalHeatingRun() throws Exception {
+		final var clock = createDummyClock();
+		final var cm = new DummyComponentManager(clock);
+		final var sum = new DummySum();
+		new ControllerTest(new ControllerShiHeatPumpImpl()) //
+				.addReference("cm", new DummyConfigurationAdmin()) //
+				.addReference("componentManager", cm) //
+				.addReference("sum", sum) //
+				.addReference("predictorManager", sunnyPredictor(cm, sum, Instant.now(clock))) //
+				.addReference("heatPump", new DummyHeatShiHeatPump("heatPump0")) //
+				.addComponent(new DummyManagedSymmetricEss("ess0") //
+						.setPower(new DummyPower(10_000))) //
+				.activate(MyConfig.create() //
+						.setId("ctrl0") //
+						.setHeatPumpId("heatPump0") //
+						.setEssId("ess0") //
+						.setHeatPumpPosition(HeatPumpPosition.GRID_SIDE_OF_GRID_METER) //
+						.setMinimumSurplusPowerForElevatedMode(2500) //
+						.setMaxBatterySupportPower(2000) //
+						.build()) //
+				// Heating run the heat pump started on its own: 800 W export plus 2000 W
+				// deliverable battery support = 2800 W covered, above the 2500 W minimum.
+				// The heating setpoint stays released (elevating it would overheat the
+				// house), but the soft power limit is written to the covered power.
+				.next(new TestCase("Covered heating run: soft limit written, setpoint released") //
+						.input("_sum", Sum.ChannelId.GRID_ACTIVE_POWER, -800) //
+						.input("_sum", Sum.ChannelId.ESS_DISCHARGE_POWER, 0) //
+						.input("_sum", Sum.ChannelId.ESS_ACTIVE_POWER, 0) //
+						.input("_sum", Sum.ChannelId.ESS_SOC, 65) //
+						.input("_sum", Sum.ChannelId.ESS_CAPACITY, 10_000) //
+						.input("heatPump0", ElectricityMeter.ChannelId.ACTIVE_POWER, 2500) //
+						.input("heatPump0", HeatShiHeatPump.ChannelId.HEATING_STATUS, 3) //
+						.output("heatPump0", HeatShiHeatPump.ChannelId.HEATING_MODE, 0) //
+						.output("heatPump0", HeatShiHeatPump.ChannelId.LPC_MODE, 1) //
+						.output("heatPump0", HeatShiHeatPump.ChannelId.PC_LIMIT, 2800) //
+						.output(ControllerShiHeatPump.ChannelId.ELEVATED_MODE_ACTIVE, false) //
+						.output(ControllerShiHeatPump.ChannelId.RUN_EXTENSION_ACTIVE, false)) //
+				// Only 200 W export left -> 2200 W covered, below the minimum power. The
+				// limit is released entirely instead of throttling a genuine heat demand.
+				.next(new TestCase("Coverage too weak: limit released, run left alone") //
+						.input("_sum", Sum.ChannelId.GRID_ACTIVE_POWER, -200) //
+						.input("_sum", Sum.ChannelId.ESS_DISCHARGE_POWER, 0) //
+						.input("_sum", Sum.ChannelId.ESS_ACTIVE_POWER, 0) //
+						.input("_sum", Sum.ChannelId.ESS_SOC, 65) //
+						.input("_sum", Sum.ChannelId.ESS_CAPACITY, 10_000) //
+						.input("heatPump0", ElectricityMeter.ChannelId.ACTIVE_POWER, 2500) //
+						.input("heatPump0", HeatShiHeatPump.ChannelId.HEATING_STATUS, 3) //
+						.output("heatPump0", HeatShiHeatPump.ChannelId.LPC_MODE, 0) //
+						.output("heatPump0", HeatShiHeatPump.ChannelId.PC_LIMIT, 0)) //
+				// Heating enabled but no active run (status 1): nothing to modulate.
+				.next(new TestCase("No active run: limit stays released") //
+						.input("_sum", Sum.ChannelId.GRID_ACTIVE_POWER, -800) //
+						.input("_sum", Sum.ChannelId.ESS_DISCHARGE_POWER, 0) //
+						.input("_sum", Sum.ChannelId.ESS_ACTIVE_POWER, 0) //
+						.input("_sum", Sum.ChannelId.ESS_SOC, 65) //
+						.input("_sum", Sum.ChannelId.ESS_CAPACITY, 10_000) //
+						.input("heatPump0", ElectricityMeter.ChannelId.ACTIVE_POWER, 0) //
+						.input("heatPump0", HeatShiHeatPump.ChannelId.HEATING_STATUS, 1) //
+						.output("heatPump0", HeatShiHeatPump.ChannelId.LPC_MODE, 0) //
+						.output("heatPump0", HeatShiHeatPump.ChannelId.PC_LIMIT, 0)) //
+				.deactivate();
+	}
+
+	@Test
 	void testRunExtensionSkippedForSmallDelta() throws Exception {
 		var clock = createDummyClock();
 		var cm = new DummyComponentManager(clock);
