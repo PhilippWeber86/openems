@@ -27,10 +27,10 @@ import io.openems.edge.kostal.plenticore.enums.ControlMode;
 	@AttributeDefinition(name = "Minimum Battery-Soc", description = "The minimum battery state of charge.")
 	int minsoc() default 5;
 
-	@AttributeDefinition(name = "Watchdog", description = "The watchdog configured at the inverter to return into internal operation mode.")
+	@AttributeDefinition(name = "Watchdog", description = "The control timeout [s] configured at the inverter to return into internal operation mode. Set-points are refreshed at half this interval.")
 	int watchdog() default 30;
 
-	@AttributeDefinition(name = "Tolerance", description = "The tolerance value in watts to skip the modbus writing if the timer is not yet elapsed (smart-mode), small power values are set to 0 (idle zone).")
+	@AttributeDefinition(name = "Tolerance", description = "Idle zone in watts around zero. In SMART mode a request inside this zone releases the battery to the internal operation mode of the inverter; in REMOTE mode it is written as 0 W.")
 	int tolerance() default 50;
 
 	@AttributeDefinition(name = "Modbus-ID", description = "ID of Modbus bridge.")
