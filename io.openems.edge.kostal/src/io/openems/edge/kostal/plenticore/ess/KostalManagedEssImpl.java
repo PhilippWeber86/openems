@@ -87,7 +87,7 @@ public class KostalManagedEssImpl extends AbstractOpenemsModbusComponent impleme
 	private Config config;
 
 	private Instant lastApplyPower = Instant.MIN;
-	private Integer lastSetPower = 0;
+	private Integer lastSetPower = null;
 
 	@Reference(policy = DYNAMIC, policyOption = GREEDY, cardinality = OPTIONAL)
 	private volatile Timedata timeData;
@@ -166,7 +166,13 @@ public class KostalManagedEssImpl extends AbstractOpenemsModbusComponent impleme
 			// is the only way to hand control back to the inverter (see the KOSTAL
 			// MODBUS-TCP documentation, section "External battery management").
 			if (this.controlMode == ControlMode.SMART && Math.abs(activePower) < this.tolerance) {
+				if (this.lastSetPower != null) {
+					this.logInfo(log, "Releasing battery to internal 'AUTO' mode: idle zone, |" + activePower + "W| < "
+							+ this.tolerance + "W");
+				}
+				// reset both, so re-engaging writes immediately instead of being skipped
 				this.lastSetPower = null;
+				this.lastApplyPower = Instant.MIN;
 				return;
 			}
 
@@ -180,46 +186,30 @@ public class KostalManagedEssImpl extends AbstractOpenemsModbusComponent impleme
 				powerToWrite = 0;
 			}
 
-			// Check if we can skip this write (must still write within watchdog interval)
-			if (this.lastSetPower != null && Duration.between(this.lastApplyPower, now).getSeconds() < this.watchdog) {
-				boolean shouldSkip = false;
+			// Refresh well before the inverter's control timeout elapses; refreshing only
+			// at the boundary lets the inverter drop back into its internal mode for a
+			// moment before every refresh.
+			var refreshInterval = Math.max(1, this.watchdog / 2);
+			var refreshDue = Duration.between(this.lastApplyPower, now).getSeconds() >= refreshInterval;
 
-				// Skip if power value hasn't changed
-				if (powerToWrite == this.lastSetPower) {
-					shouldSkip = true;
-					log.debug("skipped - power unchanged at " + powerToWrite + "W");
-				} else if (this.controlMode == ControlMode.SMART) {
-					// Skip if change from last written value is within tolerance
-					if (Math.abs(powerToWrite - this.lastSetPower) <= this.tolerance) {
-						shouldSkip = true;
-						log.debug("skipped - change within tolerance (" + this.tolerance + "W): " + this.lastSetPower
-								+ "W -> " + powerToWrite + "W");
-					} else if (activePower == this.getMaxChargePower().get()
-							|| Math.abs(activePower) == this.getMaxDischargePower().get()) {
-						shouldSkip = true;
-						log.debug("skipped - at power limit: " + powerToWrite + "W");
-					}
-				}
-
-				if (shouldSkip) {
-					return;
-				}
+			// Skip only an unchanged set-point that is still fresh. Small changes are NOT
+			// suppressed: with the Ess.Power PID filter active that would be a dead-band
+			// between controller and actuator, and a dead-band in front of an integral
+			// term winds up until it breaks through - a limit cycle. Damping is the job of
+			// the filter, or of the inverter's power gradient.
+			if (this.lastSetPower != null && powerToWrite == this.lastSetPower && !refreshDue) {
+				log.debug("skipped - power unchanged at " + powerToWrite + "W");
+				return;
 			}
 
-			// Write to channel: first write, value changed significantly, or watchdog
-			// expired
-			if (this.lastSetPower == null || powerToWrite != this.lastSetPower
-					|| Duration.between(this.lastApplyPower, now).getSeconds() >= this.watchdog) {
+			// Kostal is fine by writing one register with signed value
+			IntegerWriteChannel setActivePowerChannel = this.channel(KostalManagedEss.ChannelId.SET_ACTIVE_POWER);
+			setActivePowerChannel.setNextWriteValue(powerToWrite);
 
-				// Kostal is fine by writing one register with signed value
-				IntegerWriteChannel setActivePowerChannel = this.channel(KostalManagedEss.ChannelId.SET_ACTIVE_POWER);
-				setActivePowerChannel.setNextWriteValue(powerToWrite);
+			this.lastSetPower = powerToWrite;
+			this.lastApplyPower = now;
 
-				this.lastSetPower = powerToWrite;
-				this.lastApplyPower = Instant.now();
-
-				log.debug("--> activePowerWanted: " + powerToWrite + "W (requested: " + activePower + "W)");
-			}
+			log.debug("--> activePowerWanted: " + powerToWrite + "W (requested: " + activePower + "W)");
 		} else {
 			this.lastSetPower = null;
 		}
@@ -263,8 +253,13 @@ public class KostalManagedEssImpl extends AbstractOpenemsModbusComponent impleme
 						m(KostalManagedEss.ChannelId.BATTERY_VOLTAGE, new FloatDoublewordElement(216).wordOrder(LSWMSW),
 								SCALE_FACTOR_3)),
 				new FC3ReadRegistersTask(531, Priority.LOW,
-						m(SymmetricEss.ChannelId.MAX_APPARENT_POWER, new UnsignedWordElement(531)),
-						new DummyRegisterElement(532, 581), //
+						m(SymmetricEss.ChannelId.MAX_APPARENT_POWER, new UnsignedWordElement(531))),
+				// Actual battery power on its own HIGH priority task. It feeds the Ess.Power
+				// PID filter, the derived household consumption in _sum, and every controller
+				// that computes PV surplus. On LOW priority it is refreshed only every n-th
+				// Cycle (n = number of LOW tasks on the bridge), which puts dead time into the
+				// PID's feedback path and makes the surplus calculation lag its own effect.
+				new FC3ReadRegistersTask(582, Priority.HIGH,
 						m(SymmetricEss.ChannelId.ACTIVE_POWER, new SignedWordElement(582))),
 				new FC3ReadRegistersTask(1034, Priority.LOW,
 						m(KostalManagedEss.ChannelId.CHARGE_POWER, new FloatDoublewordElement(1034).wordOrder(LSWMSW)),
