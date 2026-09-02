@@ -33,6 +33,9 @@ import io.openems.edge.kostal.plenticore.enums.ControlMode;
 	@AttributeDefinition(name = "Tolerance", description = "Idle zone in watts around zero. In SMART mode a request inside this zone releases the battery to the internal operation mode of the inverter; in REMOTE mode it is written as 0 W.")
 	int tolerance() default 50;
 
+	@AttributeDefinition(name = "Use battery limitation", description = "Write the effective charge/discharge limits to the inverter (MODBUS-TCP documentation section 3.5, registers 1280/1282). Requires PLENTICORE G3 from SW 03.05; availability is detected automatically. While disabled the registers are only read.")
+	boolean useBatteryLimitation() default false;
+
 	@AttributeDefinition(name = "Modbus-ID", description = "ID of Modbus bridge.")
 	String modbus_id() default "modbus0";
 
