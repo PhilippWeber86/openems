@@ -1,7 +1,11 @@
 package io.openems.edge.kostal.plenticore.ess;
 
 import static io.openems.edge.bridge.modbus.api.ElementToChannelConverter.SCALE_FACTOR_3;
+import static io.openems.edge.bridge.modbus.api.ModbusUtils.FunctionCode.FC3;
+import static io.openems.edge.bridge.modbus.api.ModbusUtils.readElementOnce;
 import static io.openems.edge.bridge.modbus.api.element.WordOrder.LSWMSW;
+import static io.openems.edge.common.type.Phase.SingleOrAllPhase.ALL;
+import static io.openems.edge.ess.power.api.Pwr.ACTIVE;
 import static io.openems.edge.common.channel.ChannelUtils.setValue;
 import static io.openems.edge.common.event.EdgeEventConstants.TOPIC_CYCLE_BEFORE_CONTROLLERS;
 import static io.openems.edge.common.event.EdgeEventConstants.TOPIC_CYCLE_BEFORE_PROCESS_IMAGE;
@@ -13,6 +17,7 @@ import static org.osgi.service.component.annotations.ReferencePolicyOption.GREED
 
 import java.time.Duration;
 import java.time.Instant;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import org.osgi.service.component.ComponentContext;
 import org.osgi.service.component.annotations.Activate;
@@ -40,6 +45,7 @@ import io.openems.edge.bridge.modbus.api.element.UnsignedDoublewordElement;
 import io.openems.edge.bridge.modbus.api.element.UnsignedWordElement;
 import io.openems.edge.bridge.modbus.api.task.FC16WriteRegistersTask;
 import io.openems.edge.bridge.modbus.api.task.FC3ReadRegistersTask;
+import io.openems.edge.bridge.modbus.api.task.Task.ExecuteState;
 import io.openems.edge.common.channel.IntegerWriteChannel;
 import io.openems.edge.common.component.OpenemsComponent;
 import io.openems.edge.common.sum.GridMode;
@@ -91,6 +97,12 @@ public class KostalManagedEssImpl extends AbstractOpenemsModbusComponent impleme
 
 	@Reference(policy = DYNAMIC, policyOption = GREEDY, cardinality = OPTIONAL)
 	private volatile Timedata timeData;
+
+	/**
+	 * True once the inverter has answered on the "Battery limitation" registers of
+	 * documentation section 3.5. Detected once, see {@link #detectBatteryLimitation}.
+	 */
+	private volatile boolean batteryLimitation = false;
 
 	private ControlMode controlMode;
 	private int minsoc = 5;
@@ -155,6 +167,10 @@ public class KostalManagedEssImpl extends AbstractOpenemsModbusComponent impleme
 		// Using separate channel for the demanded charge/discharge power
 		this._setChargePowerWanted(activePower);
 
+		// Independent of the control mode: hand the effective power limits to the
+		// inverter, so its internal regulation stays inside them as well.
+		this.applyBatteryLimitation();
+
 		// managed or internal mode -> switch to max. self consumption automatic
 		// (no writes to channel)
 		if (this.isManaged() && this.controlMode != ControlMode.INTERNAL) {
@@ -216,13 +232,143 @@ public class KostalManagedEssImpl extends AbstractOpenemsModbusComponent impleme
 	}
 
 	/**
+	 * Debug-Log segment for the battery limitation, empty while it is not in use.
+	 *
+	 * @return the segment
+	 */
+	private String debugLogBatteryLimitation() {
+		if (!this.batteryLimitation) {
+			return "|Limitation:n/a";
+		}
+		return "|Limitation:" + (this.config.useBatteryLimitation() ? "on" : "read-only") //
+				+ " " + this.channel(KostalManagedEss.ChannelId.BATTERY_CHARGE_POWER_LIMIT).value().asStringWithoutUnit()
+				+ ".."
+				+ this.channel(KostalManagedEss.ChannelId.BATTERY_DISCHARGE_POWER_LIMIT).value().asStringWithoutUnit()
+				+ "|Fallback:"
+				+ this.channel(KostalManagedEss.ChannelId.BATTERY_FALLBACK_CHARGE_POWER).value().asStringWithoutUnit()
+				+ ".."
+				+ this.channel(KostalManagedEss.ChannelId.BATTERY_FALLBACK_DISCHARGE_POWER).value()
+						.asStringWithoutUnit()
+				+ " after "
+				+ this.channel(KostalManagedEss.ChannelId.BATTERY_FALLBACK_TIME).value().asStringWithoutUnit() + "s";
+	}
+
+	/**
+	 * Writes the effective charge/discharge limits to the inverter (documentation
+	 * section 3.5, registers 1280/1282).
+	 *
+	 * <p>
+	 * In INTERNAL mode the inverter's own limits are written, so the mode keeps its
+	 * promise not to influence the battery. In SMART and REMOTE the values are taken
+	 * from the Power solver, not from a single controller: the
+	 * same constraint channel is written by several controllers per Cycle, so only
+	 * the solved extrema describe what OpenEMS actually permits. Section 3.5
+	 * requires cyclic writes; if they stop, the inverter falls back to the values in
+	 * registers 1284/1286 after the time in 1288.
+	 */
+	private void applyBatteryLimitation() {
+		if (!this.batteryLimitation || !this.config.useBatteryLimitation() || !this.isManaged()) {
+			return;
+		}
+		// The discharge side always gets the device limit, never a solved extremum:
+		// getMaxPower is driven by "less or equals" constraints, and the dominant one -
+		// GridOptimizedCharge's SellToGridLimit - is a momentary value derived from the
+		// present grid flow ("do not discharge more right now"). That is a statement
+		// about what OpenEMS should command, not about what the battery may do, and
+		// freezing it into a hardware limit would be wrong.
+		final var dischargeLimit = magnitude(this.getMaxDischargePower().get());
+		final Integer chargeLimit;
+		if (this.controlMode == ControlMode.INTERNAL) {
+			// INTERNAL means the inverter regulates on its own, so no OpenEMS constraint
+			// is imposed. The device limit is written anyway, to clear a narrower limit
+			// that another mode may have left behind - same as the SolarEdge driver does
+			// in its internal mode.
+			chargeLimit = magnitude(this.getMaxChargePower().get());
+		} else {
+			// getMinPower is the most negative allowed Active-Power, i.e. the maximum
+			// charging OpenEMS permits. It is driven by "greater or equals" constraints,
+			// e.g. GridOptimizedCharge's DelayCharge - a genuine "do not charge more than
+			// this" that belongs in a limit register.
+			chargeLimit = Math.max(0, -this.power.getMinPower(this, ALL, ACTIVE));
+		}
+		if (chargeLimit == null || dischargeLimit == null) {
+			// device limits not read yet - write nothing rather than something wrong
+			return;
+		}
+		try {
+			this._setMaxChargePower(chargeLimit);
+			this._setMaxDischargePower(dischargeLimit);
+		} catch (OpenemsNamedException e) {
+			this.logWarn(log, "Unable to apply battery limitation: " + e.getMessage());
+		}
+	}
+
+	/**
+	 * Absolute value of a nullable limit.
+	 *
+	 * @param value the value, may be null
+	 * @return the absolute value, or null
+	 */
+	private static Integer magnitude(Integer value) {
+		return value == null ? null : Math.abs(value);
+	}
+
+	/**
+	 * Detects once whether the inverter supports the "Battery limitation" registers
+	 * of documentation section 3.5 and, if so, extends the protocol by them.
+	 *
+	 * <p>
+	 * The registers exist on PLENTICORE G3 from SW 03.05 only. Probing the register
+	 * is a direct capability test and more robust than parsing the version string.
+	 *
+	 * @param protocol the {@link ModbusProtocol} to extend
+	 */
+	private void detectBatteryLimitation(ModbusProtocol protocol) {
+		final var errors = new AtomicInteger(0);
+		readElementOnce(FC3, protocol, (state, value) -> {
+			if (state instanceof ExecuteState.Error) {
+				// give up after a few attempts - the register is simply not there
+				return errors.incrementAndGet() < 3;
+			}
+			return value == null;
+		}, new FloatDoublewordElement(1280).wordOrder(LSWMSW)) //
+				.thenAccept(value -> {
+					this.batteryLimitation = value != null;
+					this._setBatteryLimitationAvailable(this.batteryLimitation);
+					if (!this.batteryLimitation) {
+						this.logInfo(log, "Battery limitation (registers 1280..1288) is not supported");
+						return;
+					}
+					this.logInfo(log, "Battery limitation (registers 1280..1288) is supported");
+					protocol.addTask(new FC3ReadRegistersTask(1280, Priority.LOW, //
+							m(KostalManagedEss.ChannelId.BATTERY_CHARGE_POWER_LIMIT,
+									new FloatDoublewordElement(1280).wordOrder(LSWMSW)),
+							m(KostalManagedEss.ChannelId.BATTERY_DISCHARGE_POWER_LIMIT,
+									new FloatDoublewordElement(1282).wordOrder(LSWMSW)),
+							m(KostalManagedEss.ChannelId.BATTERY_FALLBACK_CHARGE_POWER,
+									new FloatDoublewordElement(1284).wordOrder(LSWMSW)),
+							m(KostalManagedEss.ChannelId.BATTERY_FALLBACK_DISCHARGE_POWER,
+									new FloatDoublewordElement(1286).wordOrder(LSWMSW)),
+							// U32, not word-swapped: the byte order setting of the inverter
+							// applies to float-formatted registers only (documentation Note 7)
+							m(KostalManagedEss.ChannelId.BATTERY_FALLBACK_TIME,
+									new UnsignedDoublewordElement(1288))));
+					protocol.addTask(new FC16WriteRegistersTask(1280, //
+							m(KostalManagedEss.ChannelId.SET_MAX_CHARGE_POWER,
+									new FloatDoublewordElement(1280).wordOrder(LSWMSW)),
+							m(KostalManagedEss.ChannelId.SET_MAX_DISCHARGE_POWER,
+									new FloatDoublewordElement(1282).wordOrder(LSWMSW))));
+				});
+	}
+
+	/**
 	 * Defines the Modbus protocol for this component.
 	 *
 	 * @return the ModbusProtocol instance
 	 */
 	@Override
 	protected ModbusProtocol defineModbusProtocol() {
-		return new ModbusProtocol(this,
+		var protocol = new ModbusProtocol(this,
 				new FC3ReadRegistersTask(56, Priority.LOW,
 						m(KostalManagedEss.ChannelId.INVERTER_STATE,
 								new UnsignedDoublewordElement(56).wordOrder(LSWMSW))),
@@ -272,6 +418,8 @@ public class KostalManagedEssImpl extends AbstractOpenemsModbusComponent impleme
 				new FC16WriteRegistersTask(1034, m(KostalManagedEss.ChannelId.SET_ACTIVE_POWER,
 						new FloatDoublewordElement(1034).wordOrder(LSWMSW))));
 
+		this.detectBatteryLimitation(protocol);
+		return protocol;
 	}
 
 	/**
@@ -291,7 +439,8 @@ public class KostalManagedEssImpl extends AbstractOpenemsModbusComponent impleme
 				+ this.channel(KostalManagedEss.ChannelId.MAX_CHARGE_POWER).value().asStringWithoutUnit()
 				+ "|MaxDischargePower:"
 				+ this.channel(KostalManagedEss.ChannelId.MAX_DISCHARGE_POWER).value().asStringWithoutUnit()
-				+ "|ChargePower:" + this.channel(KostalManagedEss.ChannelId.CHARGE_POWER).value().asString();
+				+ "|ChargePower:" + this.channel(KostalManagedEss.ChannelId.CHARGE_POWER).value().asString() //
+				+ this.debugLogBatteryLimitation();
 	}
 
 	/**

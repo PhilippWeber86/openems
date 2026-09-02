@@ -11,6 +11,7 @@ public class MyConfig extends AbstractComponentConfig implements Config {
 
 		private String id;
 		private boolean readOnlyMode;
+		private boolean useBatteryLimitation;
 		private String modbusId;
 		private int modbusUnitId;
 		private int capacity;
@@ -35,6 +36,11 @@ public class MyConfig extends AbstractComponentConfig implements Config {
 
 		public Builder setReadOnlyMode(boolean readOnly) {
 			this.readOnlyMode = readOnly;
+			return this;
+		}
+
+		public Builder setUseBatteryLimitation(boolean useBatteryLimitation) {
+			this.useBatteryLimitation = useBatteryLimitation;
 			return this;
 		}
 
@@ -112,6 +118,11 @@ public class MyConfig extends AbstractComponentConfig implements Config {
 	@Override
 	public boolean readOnlyMode() {
 		return this.builder.readOnlyMode;
+	}
+
+	@Override
+	public boolean useBatteryLimitation() {
+		return this.builder.useBatteryLimitation;
 	}
 
 	@Override

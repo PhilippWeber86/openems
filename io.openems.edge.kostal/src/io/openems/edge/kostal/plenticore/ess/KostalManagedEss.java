@@ -7,9 +7,11 @@ import static io.openems.common.channel.Unit.DEGREE_CELSIUS;
 import static io.openems.common.channel.Unit.HERTZ;
 import static io.openems.common.channel.Unit.MILLIVOLT;
 import static io.openems.common.channel.Unit.PERCENT;
+import static io.openems.common.channel.Unit.SECONDS;
 import static io.openems.common.channel.Unit.VOLT;
 import static io.openems.common.channel.Unit.VOLT_AMPERE;
 import static io.openems.common.channel.Unit.WATT;
+import static io.openems.common.types.OpenemsType.BOOLEAN;
 import static io.openems.common.types.OpenemsType.INTEGER;
 
 import io.openems.common.channel.PersistencePriority;
@@ -137,6 +139,52 @@ public interface KostalManagedEss extends ManagedSymmetricEss, SymmetricEss, Mod
 				.accessMode(READ_ONLY)),
 
 		/**
+		 * True if the inverter answers on the "Battery limitation" registers of the
+		 * MODBUS-TCP documentation section 3.5 (1280..1288). Detected once on startup;
+		 * PLENTICORE G3 from SW 03.05 only.
+		 */
+		BATTERY_LIMITATION_AVAILABLE(Doc.of(BOOLEAN)), //
+
+		/**
+		 * Charge power limit currently held by the inverter, read back from Modbus
+		 * register 1280.
+		 */
+		BATTERY_CHARGE_POWER_LIMIT(Doc.of(INTEGER) //
+				.unit(WATT) //
+				.accessMode(READ_ONLY)),
+
+		/**
+		 * Discharge power limit currently held by the inverter, read back from Modbus
+		 * register 1282.
+		 */
+		BATTERY_DISCHARGE_POWER_LIMIT(Doc.of(INTEGER) //
+				.unit(WATT) //
+				.accessMode(READ_ONLY)),
+
+		/**
+		 * Charge power limit the inverter falls back to when the limits are no longer
+		 * written, Modbus register 1284.
+		 */
+		BATTERY_FALLBACK_CHARGE_POWER(Doc.of(INTEGER) //
+				.unit(WATT) //
+				.accessMode(READ_ONLY)),
+
+		/**
+		 * Discharge power limit the inverter falls back to, Modbus register 1286.
+		 */
+		BATTERY_FALLBACK_DISCHARGE_POWER(Doc.of(INTEGER) //
+				.unit(WATT) //
+				.accessMode(READ_ONLY)),
+
+		/**
+		 * Seconds without a limit write until the fall-back values take over, Modbus
+		 * register 1288.
+		 */
+		BATTERY_FALLBACK_TIME(Doc.of(INTEGER) //
+				.unit(SECONDS) //
+				.accessMode(READ_ONLY)),
+
+		/**
 		 * Sets the maximum charge power in watts. This channel is write-only.
 		 */
 		SET_MAX_CHARGE_POWER(Doc.of(INTEGER) //
@@ -184,6 +232,15 @@ public interface KostalManagedEss extends ManagedSymmetricEss, SymmetricEss, Mod
 		public Doc doc() {
 			return this.doc;
 		}
+	}
+
+	/**
+	 * Sets the {@link ChannelId#BATTERY_LIMITATION_AVAILABLE} channel.
+	 *
+	 * @param value true if section 3.5 of the MODBUS-TCP documentation is supported
+	 */
+	public default void _setBatteryLimitationAvailable(boolean value) {
+		this.channel(ChannelId.BATTERY_LIMITATION_AVAILABLE).setNextValue(value);
 	}
 
 	/**
