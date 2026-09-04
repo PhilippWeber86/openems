@@ -14,6 +14,7 @@ import static io.openems.common.channel.Unit.WATT;
 import static io.openems.common.types.OpenemsType.BOOLEAN;
 import static io.openems.common.types.OpenemsType.INTEGER;
 
+import io.openems.common.channel.Level;
 import io.openems.common.channel.PersistencePriority;
 import io.openems.common.exceptions.OpenemsError.OpenemsNamedException;
 import io.openems.common.types.OpenemsType;
@@ -137,6 +138,22 @@ public interface KostalManagedEss extends ManagedSymmetricEss, SymmetricEss, Mod
 		MAX_DISCHARGE_POWER(Doc.of(INTEGER) //
 				.unit(WATT) //
 				.accessMode(READ_ONLY)),
+
+		/**
+		 * Difference between the solved Active-Power set-point and what plain balancing
+		 * to zero would ask for: {@code setPoint - (gridActivePower + essActivePower)}.
+		 * Around zero means OpenEMS wants exactly what the inverter's internal
+		 * regulation would do anyway, so SMART can hand the battery back.
+		 */
+		DIFF_BALANCING(Doc.of(INTEGER) //
+				.unit(WATT)),
+
+		/**
+		 * SMART mode compares the set-point against a physically expected value. An
+		 * active Ess.Power filter (PID or PT1) changes that set-point, so the comparison
+		 * never matches and the inverter stays under remote control needlessly.
+		 */
+		SMART_MODE_NOT_WORKING_WITH_FILTER(Doc.of(Level.WARNING)), //
 
 		/**
 		 * True if the inverter answers on the "Battery limitation" registers of the
