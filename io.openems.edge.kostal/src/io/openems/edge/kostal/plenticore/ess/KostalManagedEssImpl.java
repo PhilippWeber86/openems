@@ -49,6 +49,7 @@ import io.openems.edge.bridge.modbus.api.task.Task.ExecuteState;
 import io.openems.edge.common.channel.IntegerWriteChannel;
 import io.openems.edge.common.component.OpenemsComponent;
 import io.openems.edge.common.sum.GridMode;
+import io.openems.edge.common.sum.Sum;
 import io.openems.edge.common.taskmanager.Priority;
 import io.openems.edge.ess.api.HybridEss;
 import io.openems.edge.ess.api.ManagedSymmetricEss;
@@ -76,6 +77,9 @@ public class KostalManagedEssImpl extends AbstractOpenemsModbusComponent impleme
 
 	@Reference
 	private Power power;
+
+	@Reference
+	private Sum sum;
 
 	/**
 	 * Sets the Modbus bridge service reference. This method is used to reference
@@ -171,6 +175,10 @@ public class KostalManagedEssImpl extends AbstractOpenemsModbusComponent impleme
 		// inverter, so its internal regulation stays inside them as well.
 		this.applyBatteryLimitation();
 
+		var diffBalancing = this.calculateDiffBalancing(activePower);
+		this.channel(KostalManagedEss.ChannelId.SMART_MODE_NOT_WORKING_WITH_FILTER)
+				.setNextValue(this.controlMode == ControlMode.SMART && this.power.isFilterEnabled());
+
 		// managed or internal mode -> switch to max. self consumption automatic
 		// (no writes to channel)
 		if (this.isManaged() && this.controlMode != ControlMode.INTERNAL) {
@@ -181,10 +189,11 @@ public class KostalManagedEssImpl extends AbstractOpenemsModbusComponent impleme
 			// battery-management-mode register is read-only, so this fallback timeout
 			// is the only way to hand control back to the inverter (see the KOSTAL
 			// MODBUS-TCP documentation, section "External battery management").
-			if (this.controlMode == ControlMode.SMART && Math.abs(activePower) < this.tolerance) {
+			var releaseReason = this.controlMode == ControlMode.SMART ? this.releaseReason(activePower, diffBalancing)
+					: null;
+			if (releaseReason != null) {
 				if (this.lastSetPower != null) {
-					this.logInfo(log, "Releasing battery to internal 'AUTO' mode: idle zone, |" + activePower + "W| < "
-							+ this.tolerance + "W");
+					this.logInfo(log, "Releasing battery to internal 'AUTO' mode: " + releaseReason);
 				}
 				// reset both, so re-engaging writes immediately instead of being skipped
 				this.lastSetPower = null;
@@ -232,6 +241,81 @@ public class KostalManagedEssImpl extends AbstractOpenemsModbusComponent impleme
 	}
 
 	/**
+	 * Whether OpenEMS currently forbids charging or discharging outright.
+	 *
+	 * <p>
+	 * A solved set-point of zero is ambiguous: it means either "nobody wants anything"
+	 * or "somebody wants something and is not allowed to". Only the first may release
+	 * the battery. A SoC floor - from the `minsoc` configuration or from
+	 * Controller.Ess.LimitTotalDischarge - produces the second, and the inverter would
+	 * not honour it, because it only bounds the solver.
+	 *
+	 * @return true while a hard zero is in place on either side
+	 */
+	private boolean hasHardLimit() {
+		return Integer.valueOf(0).equals(this.getAllowedChargePower().get())
+				|| Integer.valueOf(0).equals(this.getAllowedDischargePower().get());
+	}
+
+	/**
+	 * Difference between the solved set-point and what plain balancing to zero would
+	 * ask for. Published on {@link KostalManagedEss.ChannelId#DIFF_BALANCING}.
+	 *
+	 * <p>
+	 * Assumes a target grid set-point of 0 W, as the GoodWe and SMA drivers do.
+	 *
+	 * @param activePower the solved Active-Power set-point
+	 * @return the difference in [W], or null if a value was missing
+	 */
+	private Integer calculateDiffBalancing(int activePower) {
+		var grid = this.sum.getGridActivePower().get();
+		var ess = this.getActivePower().get();
+		if (grid == null || ess == null) {
+			this.channel(KostalManagedEss.ChannelId.DIFF_BALANCING).setNextValue(null);
+			return null;
+		}
+		var diff = activePower - (grid + ess);
+		this.channel(KostalManagedEss.ChannelId.DIFF_BALANCING).setNextValue(diff);
+		return diff;
+	}
+
+	/**
+	 * Decides whether SMART may hand the battery back to the inverter.
+	 *
+	 * <p>
+	 * Unlike the GoodWe driver, a missing value does NOT release: there the fall-back
+	 * is an explicit AUTO command that is undone immediately, while here it means
+	 * waiting out the inverter's control timeout.
+	 *
+	 * @param activePower   the solved Active-Power set-point
+	 * @param diffBalancing the value from {@link #calculateDiffBalancing}, may be null
+	 * @return the reason to release, or null to keep control
+	 */
+	private String releaseReason(int activePower, Integer diffBalancing) {
+		if (Math.abs(activePower) < this.tolerance && !this.hasHardLimit()) {
+			// nothing is being asked of the battery at all
+			return "idle zone, |" + activePower + "W| < " + this.tolerance + "W";
+		}
+		if (diffBalancing == null) {
+			return null;
+		}
+		if (Math.abs(diffBalancing) <= 1) {
+			// the set-point is plain balancing to zero - exactly what the inverter's
+			// internal regulation does on its own. Tolerance is 1 W for rounding only:
+			// with no Ess.Power filter the set-point is computed from the same process
+			// image, so the equality is exact by construction, and a wider band would
+			// swallow a genuine small request.
+			return "set-point matches plain balancing to zero";
+		}
+		if (this.batteryLimitation && activePower == this.power.getMinPower(this, ALL, ACTIVE)) {
+			// the set-point deviates only because a charge cap binds - and that cap has
+			// been handed to the inverter, so it will respect it while regulating itself
+			return "at the charge limit, which the inverter enforces itself";
+		}
+		return null;
+	}
+
+	/**
 	 * Debug-Log segment for the battery limitation, empty while it is not in use.
 	 *
 	 * @return the segment
@@ -240,8 +324,7 @@ public class KostalManagedEssImpl extends AbstractOpenemsModbusComponent impleme
 		if (!this.batteryLimitation) {
 			return "|Limitation:n/a";
 		}
-		return "|Limitation:"
-				+ this.channel(KostalManagedEss.ChannelId.BATTERY_CHARGE_POWER_LIMIT).value().asStringWithoutUnit()
+		return "|Limitation:" + this.channel(KostalManagedEss.ChannelId.BATTERY_CHARGE_POWER_LIMIT).value().asStringWithoutUnit()
 				+ ".."
 				+ this.channel(KostalManagedEss.ChannelId.BATTERY_DISCHARGE_POWER_LIMIT).value().asStringWithoutUnit()
 				+ "|Fallback:"
@@ -270,12 +353,14 @@ public class KostalManagedEssImpl extends AbstractOpenemsModbusComponent impleme
 		if (!this.batteryLimitation || !this.isManaged()) {
 			return;
 		}
-		// The discharge side always gets the device limit, never a solved extremum:
-		// getMaxPower is driven by "less or equals" constraints, and the dominant one -
-		// GridOptimizedCharge's SellToGridLimit - is a momentary value derived from the
-		// present grid flow ("do not discharge more right now"). That is a statement
-		// about what OpenEMS should command, not about what the battery may do, and
-		// freezing it into a hardware limit would be wrong.
+		// The discharge side gets the device limit, never a solved extremum: getMaxPower
+		// is driven by "less or equals" constraints, and the dominant one -
+		// GridOptimizedCharge's SellToGridLimit - is derived from the present grid flow
+		// ("do not discharge more right now"). That says what OpenEMS should command, not
+		// what the battery may do. A SoC floor is not pushed into the inverter either:
+		// no other driver does that, and OpenEMS expresses it as a solver constraint
+		// (Controller.Ess.LimitTotalDischarge). It is honoured by not releasing instead,
+		// see releaseReason().
 		final var dischargeLimit = magnitude(this.getMaxDischargePower().get());
 		final Integer chargeLimit;
 		if (this.controlMode == ControlMode.INTERNAL) {
@@ -440,6 +525,7 @@ public class KostalManagedEssImpl extends AbstractOpenemsModbusComponent impleme
 				+ "|MaxDischargePower:"
 				+ this.channel(KostalManagedEss.ChannelId.MAX_DISCHARGE_POWER).value().asStringWithoutUnit()
 				+ "|ChargePower:" + this.channel(KostalManagedEss.ChannelId.CHARGE_POWER).value().asString() //
+				+ "|Diff:" + this.channel(KostalManagedEss.ChannelId.DIFF_BALANCING).value().asStringWithoutUnit() //
 				+ this.debugLogBatteryLimitation();
 	}
 
