@@ -8,6 +8,8 @@ import org.junit.jupiter.api.Test;
 import io.openems.edge.bridge.modbus.test.DummyModbusBridge;
 import io.openems.edge.common.channel.IntegerWriteChannel;
 import io.openems.edge.common.test.AbstractComponentTest.TestCase;
+import io.openems.edge.common.sum.DummySum;
+import io.openems.edge.ess.test.DummyPower;
 import io.openems.edge.common.test.ComponentTest;
 import io.openems.edge.kostal.plenticore.enums.ControlMode;
 
@@ -19,6 +21,8 @@ public class KostalManagedEssImplTest {
 	public void test() throws Exception {
 		new ComponentTest(new KostalManagedEssImpl()) //
 				.addReference("setModbus", new DummyModbusBridge("modbus0")) //
+				.addReference("sum", new DummySum()) //
+				.addReference("power", new DummyPower()) //
 				.activate(MyConfig.create() //
 						.setId("ess0") //
 						.setReadOnlyMode(true) //
@@ -46,6 +50,8 @@ public class KostalManagedEssImplTest {
 		var ess = new KostalManagedEssImpl();
 		new ComponentTest(ess) //
 				.addReference("setModbus", new DummyModbusBridge("modbus0")) //
+				.addReference("sum", new DummySum()) //
+				.addReference("power", new DummyPower()) //
 				.activate(MyConfig.create() //
 						.setId("ess0") //
 						.setReadOnlyMode(readOnly) //
