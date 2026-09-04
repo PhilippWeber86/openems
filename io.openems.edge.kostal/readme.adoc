@@ -160,7 +160,11 @@ The Plenticore family components communicate via Modbus TCP.
 * OpenemsComponent
 * TimedataProvider
 
-*Description*: Hybrid inverter component for photovoltaic production monitoring and power limiting.
+*Description*: Photovoltaic production monitoring and power limiting for a
+PLENTICORE without a battery. With a battery use the
+<<_plenticore_ess,ESS>> together with one
+<<_plenticore_charger,Charger>> per string instead; running this component
+alongside them counts the photovoltaic power twice.
 
 .*Configuration*:
 
@@ -172,6 +176,41 @@ The Plenticore family components communicate via Modbus TCP.
 * `modbusUnitId` (Integer): Modbus Unit ID (default: 71)
 
 [[_plenticore_pvinverter]]
+
+==== <<_plenticore_charger,Plenticore Charger Component>>
+
+*Name*: KOSTAL Plenticore Charger
+
+*Factory-PID*: `Kostal.Plenticore.Charger`
+
+.Implemented Natures/Interfaces
+* KostalCharger
+* EssDcCharger
+* ModbusComponent
+* OpenemsComponent
+* ModbusSlave
+* TimedataProvider
+
+*Description*: One PV input (MPP tracker) of the inverter, as DC production.
+The battery of a PLENTICORE sits on the DC side, so the PV never crosses an AC
+meter - it is DC production attached to the <<_plenticore_ess,ESS>>. Configure
+one instance per connected string.
+
+NOTE: Mutually exclusive with the <<_plenticore_pvinverter,PV-Inverter
+component>>, which reports the same production on the AC side. Running both
+counts the photovoltaic power twice.
+
+.*Configuration*:
+
+* `id` (String): Component ID for unique identification (default: "charger0")
+* `alias` (String): Human-readable alias for the component
+* `enabled` (Boolean): Enable/disable this component (default: true)
+* `pvPort` (Enum): PV input this charger represents - PV_1, PV_2 or PV_3
+  (default: PV_1)
+* `modbus_id` (String): ID of Modbus bridge (default: "modbus0")
+* `modbusUnitId` (Integer): Modbus Unit ID (default: 71)
+
+[[_plenticore_charger]]
 
 ==== <<_plenticore_ksem,Plenticore KSEM Component>>
 
