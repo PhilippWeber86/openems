@@ -240,8 +240,8 @@ public class KostalManagedEssImpl extends AbstractOpenemsModbusComponent impleme
 		if (!this.batteryLimitation) {
 			return "|Limitation:n/a";
 		}
-		return "|Limitation:" + (this.config.useBatteryLimitation() ? "on" : "read-only") //
-				+ " " + this.channel(KostalManagedEss.ChannelId.BATTERY_CHARGE_POWER_LIMIT).value().asStringWithoutUnit()
+		return "|Limitation:"
+				+ this.channel(KostalManagedEss.ChannelId.BATTERY_CHARGE_POWER_LIMIT).value().asStringWithoutUnit()
 				+ ".."
 				+ this.channel(KostalManagedEss.ChannelId.BATTERY_DISCHARGE_POWER_LIMIT).value().asStringWithoutUnit()
 				+ "|Fallback:"
@@ -267,7 +267,7 @@ public class KostalManagedEssImpl extends AbstractOpenemsModbusComponent impleme
 	 * registers 1284/1286 after the time in 1288.
 	 */
 	private void applyBatteryLimitation() {
-		if (!this.batteryLimitation || !this.config.useBatteryLimitation() || !this.isManaged()) {
+		if (!this.batteryLimitation || !this.isManaged()) {
 			return;
 		}
 		// The discharge side always gets the device limit, never a solved extremum:
