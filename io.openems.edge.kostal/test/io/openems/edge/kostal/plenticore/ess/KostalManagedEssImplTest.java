@@ -9,6 +9,9 @@ import io.openems.edge.bridge.modbus.test.DummyModbusBridge;
 import io.openems.edge.common.channel.IntegerWriteChannel;
 import io.openems.edge.common.test.AbstractComponentTest.TestCase;
 import io.openems.edge.common.sum.DummySum;
+import io.openems.edge.common.type.Phase.SingleOrAllPhase;
+import io.openems.edge.ess.api.ManagedSymmetricEss;
+import io.openems.edge.ess.power.api.Pwr;
 import io.openems.edge.ess.test.DummyPower;
 import io.openems.edge.common.test.ComponentTest;
 import io.openems.edge.kostal.plenticore.enums.ControlMode;
@@ -109,6 +112,62 @@ public class KostalManagedEssImplTest {
 		// An unchanged set-point is not re-written until the refresh is due.
 		ess.applyPower(-3040, 0);
 		assertNull(writtenSetPoint(ess));
+	}
+
+	/**
+	 * A solver stub with a fixed range, to express what Controllers have made of the
+	 * battery - which the device allowances do not show.
+	 *
+	 * @param minPower the solved minimum Active-Power
+	 * @param maxPower the solved maximum Active-Power
+	 * @return the {@link DummyPower}
+	 */
+	private static DummyPower powerWithRange(int minPower, int maxPower) {
+		return new DummyPower() {
+
+			@Override
+			public int getMinPower(ManagedSymmetricEss ess, SingleOrAllPhase phase, Pwr pwr) {
+				return minPower;
+			}
+
+			@Override
+			public int getMaxPower(ManagedSymmetricEss ess, SingleOrAllPhase phase, Pwr pwr) {
+				return maxPower;
+			}
+		};
+	}
+
+	@Test
+	public void testSmartKeepsZeroWhenAControllerBlocksDischarge() throws Exception {
+		// Controller.Ess.LimitTotalDischarge expresses its SoC floor as
+		// SetActivePowerLessOrEquals, so the solved maximum is 0 W while the DEVICE
+		// still reports 5000 W of discharge freedom. The 0 W set-point is therefore
+		// enforced, not idle: releasing to internal 'AUTO' would let the inverter's
+		// own self-consumption regulation discharge past the floor.
+		var ess = new KostalManagedEssImpl();
+		new ComponentTest(ess) //
+				.addReference("setModbus", new DummyModbusBridge("modbus0")) //
+				.addReference("sum", new DummySum()) //
+				.addReference("power", powerWithRange(-5000, 0)) //
+				.activate(MyConfig.create() //
+						.setId("ess0") //
+						.setReadOnlyMode(false) //
+						.setModbusId("modbus0") //
+						.setCapacity(10000) //
+						.setWatchdog(20) //
+						.setTolerance(TOLERANCE) //
+						.setControlMode(ControlMode.SMART) //
+						.setModbusUnitId(71) //
+						.setDebugMode(false) //
+						.build());
+		ess.getAllowedChargePowerChannel().setNextValue(-5000);
+		ess.getAllowedChargePowerChannel().nextProcessImage();
+		ess.getAllowedDischargePowerChannel().setNextValue(5000);
+		ess.getAllowedDischargePowerChannel().nextProcessImage();
+
+		ess.applyPower(0, 0);
+
+		assertEquals(Integer.valueOf(0), writtenSetPoint(ess));
 	}
 
 	@Test
