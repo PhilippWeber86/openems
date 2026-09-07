@@ -1211,6 +1211,12 @@ class ControllerShiHeatPumpImplTest {
 				// The battery still delivers nothing, so the active support has to be 0.
 				// Reading EssActivePower here would report 2000 W of battery support for
 				// power that the PV is providing.
+				//
+				// The limit is an AC bound on a HybridEss, so it must leave the 4000 W of
+				// PV untouched and only add the battery allowance on top: 4000 W PV + 0 W
+				// household (the PV covers it) + 2000 W support = 6000 W. A limit of the
+				// bare battery allowance would sit BELOW the inverter's present 4000 W and
+				// throttle the exported PV.
 				.next(new TestCase("Hybrid ESS, battery idle while PV exports: active support is 0") //
 						.input("_sum", Sum.ChannelId.GRID_ACTIVE_POWER, -1000) //
 						.input("_sum", Sum.ChannelId.ESS_DISCHARGE_POWER, 0) //
@@ -1219,7 +1225,7 @@ class ControllerShiHeatPumpImplTest {
 						.input("_sum", Sum.ChannelId.ESS_CAPACITY, 10_000) //
 						.input("heatPump0", ElectricityMeter.ChannelId.ACTIVE_POWER, 2000) //
 						.output(ControllerShiHeatPump.ChannelId.ELEVATED_MODE_ACTIVE, false) //
-						.output(ControllerShiHeatPump.ChannelId.ESS_DISCHARGE_LIMIT, 3000) //
+						.output(ControllerShiHeatPump.ChannelId.ESS_DISCHARGE_LIMIT, 6000) //
 						.output(ControllerShiHeatPump.ChannelId.ESS_SUPPORT_POWER, 0)) //
 				.deactivate();
 	}
@@ -1307,6 +1313,56 @@ class ControllerShiHeatPumpImplTest {
 						.input("heatPump0", HeatShiHeatPump.ChannelId.HEATING_STATUS, 3) //
 						.output("ess0", ManagedSymmetricEss.ChannelId.SET_ACTIVE_POWER_GREATER_OR_EQUALS, 1160) //
 						.output(ControllerShiHeatPump.ChannelId.ESS_FORCED_EXPORT_POWER, 1160) //
+						.output(ControllerShiHeatPump.ChannelId.ELEVATED_MODE_ACTIVE, false)) //
+				.deactivate();
+	}
+
+	@Test
+	void testHybridEssSupportNotReducedByPvCoveredHousehold() throws Exception {
+		final var clock = createDummyClock();
+		final var cm = new DummyComponentManager(clock);
+		final var sum = new DummySum();
+		new ControllerTest(new ControllerShiHeatPumpImpl()) //
+				.addReference("cm", new DummyConfigurationAdmin()) //
+				.addReference("componentManager", cm) //
+				.addReference("sum", sum) //
+				.addReference("predictorManager", sunnyPredictor(cm, sum, Instant.now(clock))) //
+				.addReference("heatPump", new DummyHeatShiHeatPump("heatPump0")) //
+				// Inverter AC bound of 4000 W, deliberately tight so the battery BUDGET is
+				// what limits the support - otherwise the reservation error stays invisible.
+				.addComponent(new DummyManagedSymmetricEss("ess0") //
+						.setPower(new DummyPower(4000))) //
+				.activate(MyConfig.create() //
+						.setId("ctrl0") //
+						.setHeatPumpId("heatPump0") //
+						.setEssId("ess0") //
+						.setHeatPumpPosition(HeatPumpPosition.GRID_SIDE_OF_GRID_METER) //
+						.setMinimumSurplusPowerForElevatedMode(4000) //
+						.build()) //
+				// HybridEss with 2600 W of PV and an idle battery: EssActivePower is the
+				// whole inverter (2600 W), EssDischargePower the battery alone (0 W). The
+				// household draws 1000 W, so 1600 W are exported and reach the grid-side
+				// heat pump, which takes 2600 W - a gap of 1000 W.
+				//
+				// The household is served entirely by PV, so NOTHING may be reserved from
+				// the battery budget: 4000 W bound - 2600 W PV share = 1400 W available,
+				// enough for the 1000 W gap. Reserving the household from the WHOLE
+				// INVERTER figure instead books the PV-covered 1000 W as battery draw and
+				// leaves only 400 W - the support would then cover less than half the gap
+				// and the heat pump would take the rest from the grid.
+				//
+				// The constraint bounds the ESS ACTIVE power, on a HybridEss the whole
+				// inverter: it has to rise from 2600 W to 3600 W so that 1000 W more leave
+				// the segment. The reported support stays the battery contribution, 1000 W.
+				.next(new TestCase("Hybrid ESS: PV-covered household does not shrink the battery budget") //
+						.input("_sum", Sum.ChannelId.GRID_ACTIVE_POWER, -1600) //
+						.input("_sum", Sum.ChannelId.ESS_DISCHARGE_POWER, 0) //
+						.input("_sum", Sum.ChannelId.ESS_ACTIVE_POWER, 2600) //
+						.input("_sum", Sum.ChannelId.ESS_SOC, 65) //
+						.input("_sum", Sum.ChannelId.ESS_CAPACITY, 10_000) //
+						.input("heatPump0", ElectricityMeter.ChannelId.ACTIVE_POWER, 2600) //
+						.output("ess0", ManagedSymmetricEss.ChannelId.SET_ACTIVE_POWER_GREATER_OR_EQUALS, 3600) //
+						.output(ControllerShiHeatPump.ChannelId.ESS_FORCED_EXPORT_POWER, 1000) //
 						.output(ControllerShiHeatPump.ChannelId.ELEVATED_MODE_ACTIVE, false)) //
 				.deactivate();
 	}

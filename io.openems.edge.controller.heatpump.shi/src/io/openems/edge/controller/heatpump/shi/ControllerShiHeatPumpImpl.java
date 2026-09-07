@@ -469,20 +469,25 @@ public class ControllerShiHeatPumpImpl extends AbstractOpenemsComponent
 	 */
 	private int deliverableSupportPower(int gridActivePower, int heatPumpPower) throws OpenemsNamedException {
 		ManagedSymmetricEss ess = this.componentManager.getComponent(this.config.ess_id());
-		var essActivePower = this.sum.getEssActivePower().orElse(0);
-		// Power the battery currently discharges for the household (its share),
-		// which must be reserved before offering the remainder to the heat pump.
-		// Behind the meter the heat pump is part of the measurement, so it is
-		// removed; grid-side it is invisible and only the household segment counts.
-		var householdReserved = switch (this.config.heatPumpPosition()) {
-		case BEHIND_GRID_METER -> Math.max(0, gridActivePower + essActivePower - heatPumpPower);
-		case GRID_SIDE_OF_GRID_METER -> Math.max(0, gridActivePower + essActivePower);
+		// Battery power the household currently needs, which must be reserved before
+		// offering the remainder to the heat pump. Deliberately built from the BATTERY
+		// figure: with a HybridEss EssActivePower is the whole inverter, so a household
+		// already served by PV would be reserved from the battery budget a second time
+		// (the PV share is subtracted separately below). The share is additionally
+		// bounded by the discharge itself - the grid may be covering part of the
+		// household deficit. Behind the meter the heat pump is part of the measurement,
+		// so it is removed; grid-side it is invisible and only the household counts.
+		var essDischargePower = this.sum.getEssDischargePower().orElse(0);
+		var householdDeficit = switch (this.config.heatPumpPosition()) {
+		case BEHIND_GRID_METER -> gridActivePower + essDischargePower - heatPumpPower;
+		case GRID_SIDE_OF_GRID_METER -> gridActivePower + essDischargePower;
 		};
+		var householdReserved = Math.min(Math.max(0, essDischargePower), Math.max(0, householdDeficit));
 		// With a HybridEss the solver's maximum is an AC bound and already contains the
 		// PV, while this budget is meant to be BATTERY power - the PV surplus is counted
 		// separately above. The difference of the two _sum channels is that PV share, and
 		// it is zero for an AC-coupled system, where both channels carry the same value.
-		var pvShare = Math.max(0, essActivePower - this.sum.getEssDischargePower().orElse(0));
+		var pvShare = this.pvShareOfEssPower();
 		var deliverable = Math.max(0, ess.getPower().getMaxPower(ess, ALL, ACTIVE) - pvShare - householdReserved);
 		var cap = this.config.maxBatterySupportPower();
 		return cap > 0 ? Math.min(cap, deliverable) : deliverable;
@@ -771,6 +776,17 @@ public class ControllerShiHeatPumpImpl extends AbstractOpenemsComponent
 	 * @return the battery support power actually applied in W
 	 * @throws OpenemsNamedException on error
 	 */
+	/**
+	 * The DC-PV share flowing through the inverter of a HybridEss: the difference
+	 * between the whole-inverter figure and the battery-only figure. Zero on an
+	 * AC-coupled system, where _sum derives both from the same measurement.
+	 *
+	 * @return the PV share of the ESS active power in W
+	 */
+	private int pvShareOfEssPower() {
+		return Math.max(0, this.sum.getEssActivePower().orElse(0) - this.sum.getEssDischargePower().orElse(0));
+	}
+
 	private int applyEssSupport(int maxSupportPower, int surplusPower, int heatPumpPower) throws OpenemsNamedException {
 		switch (this.config.heatPumpPosition()) {
 		case BEHIND_GRID_METER -> {
@@ -779,12 +795,24 @@ public class ControllerShiHeatPumpImpl extends AbstractOpenemsComponent
 			// deliverable support power and clamped by the ESS below.
 			var supportPower = Math.min(maxSupportPower, heatPumpPower);
 			ManagedSymmetricEss ess = this.componentManager.getComponent(this.config.ess_id());
-			var essActivePower = this.sum.getEssActivePower().orElse(0);
-			var householdDischarge = Math.max(0,
-					this.sum.getGridActivePower().orElse(0) + essActivePower - heatPumpPower);
+			// Battery discharge the household currently needs - from the BATTERY figure
+			// and bounded by the discharge itself, for the same reason as in
+			// deliverableSupportPower: on a HybridEss EssActivePower is the whole
+			// inverter, so a household served by PV must not be booked as battery draw.
+			var essDischargePower = this.sum.getEssDischargePower().orElse(0);
+			var householdDischarge = Math.min(Math.max(0, essDischargePower), Math.max(0,
+					this.sum.getGridActivePower().orElse(0) + essDischargePower - heatPumpPower));
+			// The allowance above is BATTERY power, but the constraint bounds the ESS
+			// active power - which on a HybridEss is the whole inverter, PV included.
+			// The PV share must therefore be added, otherwise the limit would throttle
+			// usable PV: with 5 kW PV, an idle battery and support disabled the battery
+			// allowance is 0 W, and applying that as an AC bound would cut the inverter
+			// to 0 W and force the heat pump onto the grid despite ample PV. The share
+			// is 0 on an AC-coupled system, where the limit stays a pure battery bound.
 			var limit = ess.getPower().fitValueIntoMinMaxPower(this.id(), ess, ALL, ACTIVE,
-					householdDischarge + supportPower);
+					this.pvShareOfEssPower() + householdDischarge + supportPower);
 			ess.setActivePowerLessOrEquals(limit);
+			// Reports the bound actually applied, i.e. including the PV share.
 			this._setEssDischargeLimit(limit);
 			// Here the battery is only given a discharge ALLOWANCE - whether it is
 			// actually used for the heat pump depends on the PV. The actually active
@@ -798,7 +826,6 @@ public class ControllerShiHeatPumpImpl extends AbstractOpenemsComponent
 			// latter is the whole inverter and would report battery support while the
 			// battery sits idle and the PV does the work. Identical on an AC-coupled
 			// system, where _sum derives EssDischargePower from ActivePower.
-			var essDischargePower = this.sum.getEssDischargePower().orElse(0);
 			return Math.max(0, Math.min(supportPower, Math.max(0, essDischargePower) - householdDischarge));
 		}
 		case GRID_SIDE_OF_GRID_METER -> {
