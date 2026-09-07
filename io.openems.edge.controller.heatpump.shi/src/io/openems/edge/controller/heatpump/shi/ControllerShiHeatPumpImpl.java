@@ -803,13 +803,24 @@ public class ControllerShiHeatPumpImpl extends AbstractOpenemsComponent
 			}
 			ManagedSymmetricEss ess = this.componentManager.getComponent(this.config.ess_id());
 			var essAndGrid = this.sum.getEssActivePower().orElse(0) + this.sum.getGridActivePower().orElse(0);
+			// The export leaving the segment is what reaches the heat pump:
+			// export = rawSurplus + ess, where rawSurplus = -(ess + grid) - it may be
+			// NEGATIVE when the battery is covering the household. Full coverage means
+			// export >= surplusPower + forcedExportPower, hence
+			// ess >= forcedExportPower + surplusPower + (ess + grid).
+			//
+			// surplusPower must not be dropped from that sum: surplusPower is clamped at
+			// 0 while (ess + grid) is not, so the two only cancel while a PV surplus
+			// exists. Omitting it understated the request by exactly the surplus and
+			// drove it negative once the surplus exceeded half the heat-pump power - the
+			// ESS then clamped the request away and no support flowed at all, which is
+			// the situation a boost under a passing cloud is in.
 			var requiredPower = ess.getPower().fitValueIntoMinMaxPower(this.id(), ess, ALL, ACTIVE,
-					essAndGrid + forcedExportPower);
+					forcedExportPower + surplusPower + essAndGrid);
 			ess.setActivePowerGreaterOrEquals(requiredPower);
-			// The forced-export target may be clamped down by the ESS; the actually
-			// forced battery power towards the heat pump is the increment the ESS is
-			// pushed above the present ess+grid flow, not the unclamped request.
-			var actualSupport = Math.max(0, requiredPower - essAndGrid);
+			// The request may be clamped down by the ESS; the battery power actually
+			// forced towards the heat pump is the export beyond the PV surplus share.
+			var actualSupport = Math.max(0, requiredPower - surplusPower - essAndGrid);
 			this._setEssForcedExportPower(actualSupport);
 			return actualSupport;
 		}

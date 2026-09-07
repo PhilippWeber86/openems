@@ -1269,6 +1269,49 @@ class ControllerShiHeatPumpImplTest {
 	}
 
 	@Test
+	void testForcedExportCoversHeatPumpUnderPartialSurplus() throws Exception {
+		final var clock = createDummyClock();
+		final var cm = new DummyComponentManager(clock);
+		final var sum = new DummySum();
+		new ControllerTest(new ControllerShiHeatPumpImpl()) //
+				.addReference("cm", new DummyConfigurationAdmin()) //
+				.addReference("componentManager", cm) //
+				.addReference("sum", sum) //
+				.addReference("predictorManager", sunnyPredictor(cm, sum, Instant.now(clock))) //
+				.addReference("heatPump", new DummyHeatShiHeatPump("heatPump0")) //
+				.addComponent(new DummyManagedSymmetricEss("ess0") //
+						.setPower(new DummyPower(10_000))) //
+				.activate(MyConfig.create() //
+						.setId("ctrl0") //
+						.setHeatPumpId("heatPump0") //
+						.setEssId("ess0") //
+						.setHeatPumpPosition(HeatPumpPosition.GRID_SIDE_OF_GRID_METER) //
+						// High enough that the partial surplus starts no boost - this test is
+						// about the support alone.
+						.setMinimumSurplusPowerForElevatedMode(4000) //
+						.build()) //
+				// Real operating point from a cloudy afternoon: 1440 W export left, the heat
+				// pump draws 2600 W, the battery is full. The uncovered 1160 W must be forced
+				// out of the battery, so the export reaches the heat pump's 2600 W.
+				//
+				// The CONSTRAINT is asserted on purpose, not only the diagnostic channel:
+				// EssForcedExportPower is derived back from the request, so it reads 1160 W
+				// either way and is blind to an understated request.
+				.next(new TestCase("Partial surplus: battery forced to cover the remainder") //
+						.input("_sum", Sum.ChannelId.GRID_ACTIVE_POWER, -1440) //
+						.input("_sum", Sum.ChannelId.ESS_DISCHARGE_POWER, 0) //
+						.input("_sum", Sum.ChannelId.ESS_ACTIVE_POWER, 0) //
+						.input("_sum", Sum.ChannelId.ESS_SOC, 100) //
+						.input("_sum", Sum.ChannelId.ESS_CAPACITY, 10_000) //
+						.input("heatPump0", ElectricityMeter.ChannelId.ACTIVE_POWER, 2600) //
+						.input("heatPump0", HeatShiHeatPump.ChannelId.HEATING_STATUS, 3) //
+						.output("ess0", ManagedSymmetricEss.ChannelId.SET_ACTIVE_POWER_GREATER_OR_EQUALS, 1160) //
+						.output(ControllerShiHeatPump.ChannelId.ESS_FORCED_EXPORT_POWER, 1160) //
+						.output(ControllerShiHeatPump.ChannelId.ELEVATED_MODE_ACTIVE, false)) //
+				.deactivate();
+	}
+
+	@Test
 	void testHouseholdShareReservedFromSupport() throws Exception {
 		var clock = createDummyClock();
 		var cm = new DummyComponentManager(clock);
@@ -1308,6 +1351,12 @@ class ControllerShiHeatPumpImplTest {
 						.input("heatPump0", HeatShiHeatPump.ChannelId.HOT_WATER_MODE, 0) //
 						.input("heatPump0", HeatShiHeatPump.ChannelId.HOT_WATER_ACTIVE_SETPOINT, 480) //
 						.output(ControllerShiHeatPump.ChannelId.ELEVATED_MODE_ACTIVE, false) //
+						// Counterpart to testForcedExportCoversHeatPumpUnderPartialSurplus:
+						// here the raw surplus is NEGATIVE (the battery covers the household),
+						// so surplusPower is clamped to 0 and the present ess+grid flow must be
+						// added - the battery has to discharge 3 kW for 1 kW to leave the
+						// segment. Asserting the constraint pins down this branch of the sum.
+						.output("ess0", ManagedSymmetricEss.ChannelId.SET_ACTIVE_POWER_GREATER_OR_EQUALS, 3000) //
 						.output(ControllerShiHeatPump.ChannelId.RUN_EXTENSION_ACTIVE, false) //
 						.output(ControllerShiHeatPump.ChannelId.ESS_FORCED_EXPORT_POWER, 1000)) //
 				.deactivate();
