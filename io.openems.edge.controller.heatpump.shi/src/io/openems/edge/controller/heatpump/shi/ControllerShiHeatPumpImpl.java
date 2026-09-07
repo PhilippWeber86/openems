@@ -471,7 +471,12 @@ public class ControllerShiHeatPumpImpl extends AbstractOpenemsComponent
 		case BEHIND_GRID_METER -> Math.max(0, gridActivePower + essActivePower - heatPumpPower);
 		case GRID_SIDE_OF_GRID_METER -> Math.max(0, gridActivePower + essActivePower);
 		};
-		var deliverable = Math.max(0, ess.getPower().getMaxPower(ess, ALL, ACTIVE) - householdReserved);
+		// With a HybridEss the solver's maximum is an AC bound and already contains the
+		// PV, while this budget is meant to be BATTERY power - the PV surplus is counted
+		// separately above. The difference of the two _sum channels is that PV share, and
+		// it is zero for an AC-coupled system, where both channels carry the same value.
+		var pvShare = Math.max(0, essActivePower - this.sum.getEssDischargePower().orElse(0));
+		var deliverable = Math.max(0, ess.getPower().getMaxPower(ess, ALL, ACTIVE) - pvShare - householdReserved);
 		var cap = this.config.maxBatterySupportPower();
 		return cap > 0 ? Math.min(cap, deliverable) : deliverable;
 	}
@@ -781,7 +786,13 @@ public class ControllerShiHeatPumpImpl extends AbstractOpenemsComponent
 			// idle or charging (PV covers), rather than the full allowance. This is a
 			// best-effort estimate from the measured flows, since with PV present the
 			// battery cannot be split exactly between household and heat pump.
-			return Math.max(0, Math.min(supportPower, Math.max(0, essActivePower) - householdDischarge));
+			//
+			// Deliberately the battery figure and not ActivePower: on a HybridEss the
+			// latter is the whole inverter and would report battery support while the
+			// battery sits idle and the PV does the work. Identical on an AC-coupled
+			// system, where _sum derives EssDischargePower from ActivePower.
+			var essDischargePower = this.sum.getEssDischargePower().orElse(0);
+			return Math.max(0, Math.min(supportPower, Math.max(0, essDischargePower) - householdDischarge));
 		}
 		case GRID_SIDE_OF_GRID_METER -> {
 			this._setEssDischargeLimit(null);
