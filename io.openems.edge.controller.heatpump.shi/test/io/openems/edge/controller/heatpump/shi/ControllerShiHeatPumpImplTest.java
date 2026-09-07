@@ -1183,6 +1183,48 @@ class ControllerShiHeatPumpImplTest {
 	}
 
 	@Test
+	void testBehindMeterActiveSupportZeroWhenBatteryIdleOnHybridEss() throws Exception {
+		var clock = createDummyClock();
+		var cm = new DummyComponentManager(clock);
+		var sum = new DummySum();
+		new ControllerTest(new ControllerShiHeatPumpImpl()) //
+				.addReference("cm", new DummyConfigurationAdmin()) //
+				.addReference("componentManager", cm) //
+				.addReference("sum", sum) //
+				.addReference("predictorManager", sunnyPredictor(cm, sum, Instant.now(clock))) //
+				.addReference("heatPump", new DummyHeatShiHeatPump("heatPump0") //
+						.withMeterType(MeterType.CONSUMPTION_METERED)) //
+				.addComponent(new DummyManagedSymmetricEss("ess0") //
+						.setPower(new DummyPower(10_000))) //
+				.activate(MyConfig.create() //
+						.setId("ctrl0") //
+						.setHeatPumpId("heatPump0") //
+						.setEssId("ess0") //
+						.setHeatPumpPosition(HeatPumpPosition.BEHIND_GRID_METER) //
+						.setMinimumSurplusPowerForElevatedMode(5000) //
+						.build()) //
+				// Same situation as the test above, but on a HybridEss: the PV sits on the
+				// DC side, so EssActivePower is the whole inverter (4000 W of PV, battery
+				// idle) while EssDischargePower stays the battery alone. Household 1000 W,
+				// heat pump 2000 W, the remaining 1000 W are exported.
+				//
+				// The battery still delivers nothing, so the active support has to be 0.
+				// Reading EssActivePower here would report 2000 W of battery support for
+				// power that the PV is providing.
+				.next(new TestCase("Hybrid ESS, battery idle while PV exports: active support is 0") //
+						.input("_sum", Sum.ChannelId.GRID_ACTIVE_POWER, -1000) //
+						.input("_sum", Sum.ChannelId.ESS_DISCHARGE_POWER, 0) //
+						.input("_sum", Sum.ChannelId.ESS_ACTIVE_POWER, 4000) //
+						.input("_sum", Sum.ChannelId.ESS_SOC, 65) //
+						.input("_sum", Sum.ChannelId.ESS_CAPACITY, 10_000) //
+						.input("heatPump0", ElectricityMeter.ChannelId.ACTIVE_POWER, 2000) //
+						.output(ControllerShiHeatPump.ChannelId.ELEVATED_MODE_ACTIVE, false) //
+						.output(ControllerShiHeatPump.ChannelId.ESS_DISCHARGE_LIMIT, 3000) //
+						.output(ControllerShiHeatPump.ChannelId.ESS_SUPPORT_POWER, 0)) //
+				.deactivate();
+	}
+
+	@Test
 	void testWeakBatteryLimitsSupportAndCoverage() throws Exception {
 		var clock = createDummyClock();
 		var cm = new DummyComponentManager(clock);
