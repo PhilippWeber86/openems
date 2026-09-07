@@ -2,6 +2,7 @@ package io.openems.edge.kostal.plenticore.ess;
 
 import static io.openems.edge.kostal.plenticore.ess.KostalManagedEss.ChannelId.BATTERY_LIMITATION_AVAILABLE;
 import static io.openems.edge.kostal.plenticore.ess.KostalManagedEss.ChannelId.SET_MAX_CHARGE_POWER;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
@@ -15,6 +16,10 @@ import io.openems.edge.common.channel.IntegerWriteChannel;
 import io.openems.edge.common.sum.DummySum;
 import io.openems.edge.common.test.AbstractComponentTest.TestCase;
 import io.openems.edge.common.test.ComponentTest;
+import io.openems.edge.common.type.Phase.SingleOrAllPhase;
+import io.openems.edge.ess.api.ManagedSymmetricEss;
+import io.openems.edge.ess.power.api.Power;
+import io.openems.edge.ess.power.api.Pwr;
 import io.openems.edge.ess.test.DummyPower;
 import io.openems.edge.kostal.plenticore.enums.ControlMode;
 
@@ -64,6 +69,10 @@ public class KostalBatteryLimitationTest {
 	}
 
 	private static MyConfig config() {
+		return config(ControlMode.REMOTE);
+	}
+
+	private static MyConfig config(ControlMode controlMode) {
 		return MyConfig.create() //
 				.setId("ess0") //
 				.setReadOnlyMode(false) //
@@ -71,19 +80,24 @@ public class KostalBatteryLimitationTest {
 				.setCapacity(10000) //
 				.setWatchdog(20) //
 				.setTolerance(50) //
-				.setControlMode(ControlMode.REMOTE) //
+				.setControlMode(controlMode) //
 				.setModbusUnitId(71) //
 				.setDebugMode(false) //
 				.build();
 	}
 
 	private static KostalManagedEssImpl activate(DummyModbusBridge modbus) throws Exception {
+		return activate(modbus, ControlMode.REMOTE, new DummyPower(), new DummySum());
+	}
+
+	private static KostalManagedEssImpl activate(DummyModbusBridge modbus, ControlMode controlMode, Power power,
+			DummySum sum) throws Exception {
 		var ess = new KostalManagedEssImpl();
 		new ComponentTest(ess) //
 				.addReference("setModbus", modbus) //
-				.addReference("sum", new DummySum()) //
-				.addReference("power", new DummyPower()) //
-				.activate(config()) //
+				.addReference("sum", sum) //
+				.addReference("power", power) //
+				.activate(config(controlMode)) //
 				// enough Cycles for the LOW priority tasks to have come round at least once
 				.next(new TestCase(), 20);
 		return ess;
@@ -121,5 +135,46 @@ public class KostalBatteryLimitationTest {
 		IntegerWriteChannel chargeLimit = ess.channel(SET_MAX_CHARGE_POWER);
 		assertNull(chargeLimit.getNextWriteValueAndReset().orElse(null),
 				"no limit may be written without the capability");
+	}
+
+	@Test
+	public void testSmartKeepsASetPointThatIsPinnedByAnEqualityConstraint() throws Exception {
+		// Section 3.5 present, so the charge cap IS handed to the inverter and the
+		// "at the charge limit" release becomes reachable at all.
+		var modbus = baseBridge() //
+				.withRegisters(1280, cdab(12950f, 12950f, 21000f, 21000f)) //
+				.withRegisters(1288, 0, 60);
+
+		// An equality constraint - e.g. the export the heat-pump Controller forces out
+		// of the battery - pins the solver: minimum AND maximum are the demanded 3000 W.
+		// That must NOT be mistaken for a binding charge cap, which the inverter could
+		// enforce on its own: a cap leaves the discharge side open, a demand does not.
+		var sum = new DummySum();
+		var ess = activate(modbus, ControlMode.SMART, new DummyPower() {
+
+			@Override
+			public int getMinPower(ManagedSymmetricEss e, SingleOrAllPhase phase, Pwr pwr) {
+				return 3000;
+			}
+
+			@Override
+			public int getMaxPower(ManagedSymmetricEss e, SingleOrAllPhase phase, Pwr pwr) {
+				return 3000;
+			}
+		}, sum);
+
+		// Grid and own Active-Power are needed for the balancing comparison; with both
+		// at 0 W the 3000 W set-point is far from plain balancing, so the release
+		// decision comes down to the charge-limit test.
+		sum.getGridActivePowerChannel().setNextValue(0);
+		sum.getGridActivePowerChannel().nextProcessImage();
+		ess.getActivePowerChannel().setNextValue(0);
+		ess.getActivePowerChannel().nextProcessImage();
+
+		ess.applyPower(3000, 0);
+
+		IntegerWriteChannel setActivePower = ess.channel(KostalManagedEss.ChannelId.SET_ACTIVE_POWER);
+		assertEquals(Integer.valueOf(3000), setActivePower.getNextWriteValueAndReset().orElse(null),
+				"a demanded discharge must be written, not released to 'AUTO'");
 	}
 }

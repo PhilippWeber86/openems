@@ -248,13 +248,25 @@ public class KostalManagedEssImpl extends AbstractOpenemsModbusComponent impleme
 	 * or "somebody wants something and is not allowed to". Only the first may release
 	 * the battery. A SoC floor - from the `minsoc` configuration or from
 	 * Controller.Ess.LimitTotalDischarge - produces the second, and the inverter would
-	 * not honour it, because it only bounds the solver.
+	 * not honour it, because it only bounds the solver. Such a floor is therefore
+	 * detected here on the solver range, not on the device allowances, which it
+	 * leaves untouched.
 	 *
 	 * @return true while a hard zero is in place on either side
 	 */
 	private boolean hasHardLimit() {
-		return Integer.valueOf(0).equals(this.getAllowedChargePower().get())
-				|| Integer.valueOf(0).equals(this.getAllowedDischargePower().get());
+		if (Integer.valueOf(0).equals(this.getAllowedChargePower().get())
+				|| Integer.valueOf(0).equals(this.getAllowedDischargePower().get())) {
+			return true;
+		}
+		// The device allowances are not the whole picture: a Controller can close a
+		// direction through the solver without them changing at all -
+		// Controller.Ess.LimitTotalDischarge expresses its SoC floor as
+		// SetActivePowerLessOrEquals. A solved 0 W is then ENFORCED, not idle, and
+		// releasing would let the inverter's internal regulation discharge anyway.
+		// So the effective solver range decides: a side pinned at zero is a hard limit.
+		return this.power.getMaxPower(this, ALL, ACTIVE) <= 0 //
+				|| this.power.getMinPower(this, ALL, ACTIVE) >= 0;
 	}
 
 	/**
@@ -307,10 +319,20 @@ public class KostalManagedEssImpl extends AbstractOpenemsModbusComponent impleme
 			// swallow a genuine small request.
 			return "set-point matches plain balancing to zero";
 		}
-		if (this.batteryLimitation && activePower == this.power.getMinPower(this, ALL, ACTIVE)) {
-			// the set-point deviates only because a charge cap binds - and that cap has
-			// been handed to the inverter, so it will respect it while regulating itself
-			return "at the charge limit, which the inverter enforces itself";
+		if (this.batteryLimitation) {
+			var minPower = this.power.getMinPower(this, ALL, ACTIVE);
+			// The set-point may only be read as "a charge cap binds" when the minimum
+			// really IS a charge cap: negative, and a range bound rather than a pinned
+			// value. The finished solver minimum alone does not carry that information -
+			// it also contains active set-points. An equality constraint of 3000 W makes
+			// minimum and maximum both 3000 W, and treating that as a charge cap would
+			// silently drop a genuine demand, e.g. the export the heat-pump Controller
+			// forces out of the battery. A charge cap that the inverter has been handed
+			// leaves the discharge side open, so minimum != maximum.
+			if (minPower < 0 && activePower == minPower
+					&& minPower != this.power.getMaxPower(this, ALL, ACTIVE)) {
+				return "at the charge limit, which the inverter enforces itself";
+			}
 		}
 		return null;
 	}
