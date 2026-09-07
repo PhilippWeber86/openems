@@ -10,6 +10,7 @@ public class MyConfig extends AbstractComponentConfig implements Config {
 		private String id;
 		private String heatPumpId = "heatPump0";
 		private String essId = "ess0";
+		private boolean enabled = true;
 		private HeatPumpPosition heatPumpPosition = HeatPumpPosition.BEHIND_GRID_METER;
 		private int minimumSurplusPowerForElevatedMode = 2500;
 		private double heatingSetpoint = 55.0;
@@ -131,6 +132,11 @@ public class MyConfig extends AbstractComponentConfig implements Config {
 			return this;
 		}
 
+		public Builder setEnabled(boolean value) {
+			this.enabled = value;
+			return this;
+		}
+
 		public MyConfig build() {
 			return new MyConfig(this);
 		}
@@ -150,6 +156,11 @@ public class MyConfig extends AbstractComponentConfig implements Config {
 	private MyConfig(Builder builder) {
 		super(Config.class, builder.id);
 		this.builder = builder;
+	}
+
+	@Override
+	public boolean enabled() {
+		return this.builder.enabled;
 	}
 
 	@Override

@@ -1602,6 +1602,53 @@ class ControllerShiHeatPumpImplTest {
 	}
 
 	@Test
+	void testDisablingReleasesHeatPump() throws Exception {
+		final var clock = createDummyClock();
+		final var heatPump = new DummyHeatShiHeatPump("heatPump0");
+		final var test = new ControllerTest(new ControllerShiHeatPumpImpl()) //
+				.addReference("cm", new DummyConfigurationAdmin()) //
+				.addReference("componentManager", new DummyComponentManager(clock)) //
+				.addReference("sum", new DummySum()) //
+				.addReference("heatPump", heatPump) //
+				.addComponent(new DummyManagedSymmetricEss("ess0") //
+						.setPower(new DummyPower(10_000))) //
+				.activate(MyConfig.create() //
+						.setId("ctrl0") //
+						.setHeatPumpId("heatPump0") //
+						.setEssId("ess0") //
+						.setHeatPumpPosition(HeatPumpPosition.GRID_SIDE_OF_GRID_METER) //
+						.build()) //
+				// Raise the setpoints via a boost on strong export first.
+				.next(new TestCase("Strong export: elevated") //
+						.input("_sum", Sum.ChannelId.GRID_ACTIVE_POWER, -4000) //
+						.input("_sum", Sum.ChannelId.ESS_DISCHARGE_POWER, 0) //
+						.input("heatPump0", ElectricityMeter.ChannelId.ACTIVE_POWER, 0) //
+						.output("heatPump0", HeatShiHeatPump.ChannelId.HEATING_MODE, HeatShiHeatPump.MODE_SETPOINT) //
+						.output(ControllerShiHeatPump.ChannelId.ELEVATED_MODE_ACTIVE, true));
+
+		// Merely DISABLING the Controller must release the influence too. The OSGi
+		// component stays active because its configuration still exists, so
+		// @Deactivate never fires - while the Scheduler already stops calling run().
+		// The device component keeps polling, so the heat pump's own communication
+		// watchdog does not clear a written elevation either.
+		test.modified(MyConfig.create() //
+				.setId("ctrl0") //
+				.setHeatPumpId("heatPump0") //
+				.setEssId("ess0") //
+				.setHeatPumpPosition(HeatPumpPosition.GRID_SIDE_OF_GRID_METER) //
+				.setEnabled(false) //
+				.build());
+
+		assertEquals(Integer.valueOf(HeatShiHeatPump.MODE_NONE),
+				heatPump.getHeatingModeChannel().getNextWriteValue().orElse(null));
+		assertEquals(Integer.valueOf(HeatShiHeatPump.MODE_NONE),
+				heatPump.getHotWaterModeChannel().getNextWriteValue().orElse(null));
+		assertEquals(Integer.valueOf(HeatShiHeatPump.LPC_MODE_NONE),
+				heatPump.getLpcModeChannel().getNextWriteValue().orElse(null));
+		assertEquals(Integer.valueOf(0), heatPump.getPcLimitChannel().getNextWriteValue().orElse(null));
+	}
+
+	@Test
 	void testDeactivateReleasesHeatPump() throws Exception {
 		var clock = createDummyClock();
 		var heatPump = new DummyHeatShiHeatPump("heatPump0");

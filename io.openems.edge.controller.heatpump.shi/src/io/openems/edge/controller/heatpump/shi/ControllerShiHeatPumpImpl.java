@@ -175,11 +175,18 @@ public class ControllerShiHeatPumpImpl extends AbstractOpenemsComponent
 
 	@Modified
 	private void modified(ComponentContext context, Config config) throws OpenemsNamedException {
-		// On a heat-pump-ID change the old device must be released first, otherwise
-		// a previously written setpoint elevation persists on a device this
-		// Controller no longer regulates. The reference is still bound to the old
-		// device at this point, so the release is queued on its channels.
-		if (this.config != null && !this.config.heatPump_id().equals(config.heatPump_id())) {
+		// Release the heat pump before following a configuration change that stops
+		// this Controller from regulating it - a previously written setpoint
+		// elevation would otherwise persist on the device:
+		// - on a heat-pump-ID change the reference is still bound to the OLD device
+		// at this point, so the release is queued on its channels;
+		// - on enabled -> disabled the OSGi component stays active, because the
+		// configuration still exists, so @Deactivate never fires - while the
+		// Scheduler already stops calling run(). The separate device component keeps
+		// polling Modbus, so the heat pump's own communication watchdog does not
+		// clear the influence either.
+		if (this.config != null && (!this.config.heatPump_id().equals(config.heatPump_id()) //
+				|| (this.config.enabled() && !config.enabled()))) {
 			this.releaseHeatPump();
 		}
 		super.modified(context, config.id(), config.alias(), config.enabled());
