@@ -56,8 +56,9 @@ public interface ControllerShiHeatPump extends OpenemsComponent {
 		CONTROL_NOT_ALLOWED(Doc.of(Level.WARNING) //
 				.text("The heat pump device is in read-only mode - the Controller cannot write any setpoints.")), //
 		FORECAST_CHARGE_POWER_CHANNEL_INVALID(Doc.of(Level.WARNING) //
-				.text("The configured Channel-Address for the forecast charge power cannot be resolved - "
-						+ "the fixed configured value is used instead.")), //
+				.text("The configured Channel-Address for the forecast charge power cannot be resolved, or it "
+						+ "never yields a value - no ESS nature guarantees that any particular Channel carries "
+						+ "the battery's charge capability. The fixed configured value is used instead.")), //
 		METER_TYPE_MISMATCH(Doc.of(Level.WARNING) //
 				.text("Heat pump Meter-Type does not match the configured heat pump position: "
 						+ "BEHIND_GRID_METER expects CONSUMPTION_METERED, "

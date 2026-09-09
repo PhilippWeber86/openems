@@ -2730,6 +2730,33 @@ class ControllerShiHeatPumpImplTest {
 	}
 
 	@Test
+	void testAnUnfilledForecastChargePowerChannelIsReportedNotSilentlyIgnored() throws Exception {
+		// No ESS nature guarantees that any particular Channel carries the battery's
+		// charge capability - not even the nature-declared AllowedChargePower, whose
+		// value may simply be null. A configured address that never yields a number
+		// must therefore be visible, not degrade quietly to the fixed value.
+		chargePowerFromChannelTest("ess0/AllowedChargePower") //
+				// AllowedChargePower is deliberately left unset here.
+				.next(new TestCase("Channel resolves but is empty: warning raised, fixed value used") //
+						.input("_sum", Sum.ChannelId.GRID_ACTIVE_POWER, 0) //
+						.input("_sum", Sum.ChannelId.ESS_DISCHARGE_POWER, 0) //
+						.input("_sum", Sum.ChannelId.ESS_ACTIVE_POWER, 0) //
+						.input("_sum", Sum.ChannelId.ESS_SOC, 65) //
+						.input("_sum", Sum.ChannelId.ESS_CAPACITY, 10_000) //
+						.input("heatPump0", ElectricityMeter.ChannelId.ACTIVE_POWER, 0) //
+						.output(ControllerShiHeatPump.ChannelId.FORECAST_CHARGE_POWER_CHANNEL_INVALID, true) //
+						// The fixed value in that helper is 0, so nothing is credited: both
+						// deficits stand and only 1000 of the 5000 usable Wh are free.
+						.output(ControllerShiHeatPump.ChannelId.FREE_BATTERY_ENERGY, 1000)) //
+				// Once a value does arrive the warning clears and the envelope is used.
+				.next(new TestCase("Value arrives: warning clears") //
+						.input("ess0", ManagedSymmetricEss.ChannelId.ALLOWED_CHARGE_POWER, -1000) //
+						.output(ControllerShiHeatPump.ChannelId.FORECAST_CHARGE_POWER_CHANNEL_INVALID, false) //
+						.output(ControllerShiHeatPump.ChannelId.FREE_BATTERY_ENERGY, 2000)) //
+				.deactivate();
+	}
+
+	@Test
 	void testUnresolvableForecastChargePowerChannelFallsBackToTheFixedValue() throws Exception {
 		var clock = createDummyClock();
 		var cm = new DummyComponentManager(clock);

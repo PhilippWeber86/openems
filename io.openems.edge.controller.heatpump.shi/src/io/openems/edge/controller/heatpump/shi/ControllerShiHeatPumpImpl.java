@@ -960,9 +960,16 @@ public class ControllerShiHeatPumpImpl extends AbstractOpenemsComponent
 			this.observedChargePower = sample;
 			this.observedChargePowerAt = now;
 		}
-		// Nothing observed yet (no value, or a Component that is not up): fall back to
-		// the configured value rather than crediting an unfounded recharge.
-		return this.observedChargePowerAt == Instant.MIN ? this.maxForecastChargePower : this.observedChargePower;
+		if (this.observedChargePowerAt == Instant.MIN) {
+			// The address resolves but has never yielded a number. No nature guarantees
+			// that any particular Channel is filled - not even the nature-declared
+			// AllowedChargePower - so this is a real configuration outcome, and falling
+			// back to the fixed value silently would hide it. Only the value is missing,
+			// so the same warning as an unresolvable address applies.
+			this._setForecastChargePowerChannelInvalid(true);
+			return this.maxForecastChargePower;
+		}
+		return this.observedChargePower;
 	}
 
 	/**
