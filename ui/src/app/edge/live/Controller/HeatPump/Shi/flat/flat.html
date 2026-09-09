@@ -1,0 +1,26 @@
+@if (isInitialized) {
+  <oe-flat-widget [icon]="{ color: 'normal', name: 'oe-heatpump' }" [title]="component.alias">
+    <!--Boost or normal operation-->
+    <oe-flat-widget-line [name]="'GENERAL.STATE' | translate" [value]="state"></oe-flat-widget-line>
+    <!--Current heat-pump power-->
+    @if (heatPumpPower !== null) {
+      <oe-flat-widget-line [name]="'EDGE.INDEX.WIDGETS.SHI_HEAT_PUMP.HEAT_PUMP_POWER' | translate"
+        [value]="heatPumpPower" [converter]="Utils.CONVERT_WATT_TO_KILOWATT"></oe-flat-widget-line>
+    }
+    <!--Free battery energy available above the night reserve-->
+    @if (freeBatteryEnergy !== null) {
+      <oe-flat-widget-line [name]="'EDGE.INDEX.WIDGETS.SHI_HEAT_PUMP.FREE_BATTERY_ENERGY' | translate"
+        [value]="freeBatteryEnergy" [converter]="Utils.CONVERT_TO_KILO_WATTHOURS"></oe-flat-widget-line>
+    }
+    <!--Battery power currently supporting the heat pump-->
+    @if (essSupportPower !== null) {
+      <oe-flat-widget-line [name]="'EDGE.INDEX.WIDGETS.SHI_HEAT_PUMP.BATTERY_SUPPORT_ACTIVE' | translate"
+        [value]="essSupportPower" [converter]="Utils.CONVERT_WATT_TO_KILOWATT"></oe-flat-widget-line>
+    }
+    <!--Forecasted household night reserve-->
+    @if (nightReserveEnergy !== null) {
+      <oe-flat-widget-line [name]="'EDGE.INDEX.WIDGETS.SHI_HEAT_PUMP.NIGHT_RESERVE' | translate"
+        [value]="nightReserveEnergy" [converter]="Utils.CONVERT_TO_KILO_WATTHOURS"></oe-flat-widget-line>
+    }
+  </oe-flat-widget>
+}
