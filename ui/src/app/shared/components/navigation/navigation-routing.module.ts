@@ -57,6 +57,7 @@ import { HeatScheduleComponent } from "src/app/edge/live/Controller/Heat/schedul
 import { HeatAddTaskComponent } from "src/app/edge/live/Controller/Heat/schedule/task/add/add";
 import { HeatEditTaskComponent } from "src/app/edge/live/Controller/Heat/schedule/task/edit/edit";
 import { ControllerHeatSettingsComponent } from "src/app/edge/live/Controller/Heat/settings/settings";
+import { ControllerHeatPumpShiHomeComponent } from "src/app/edge/live/Controller/HeatPump/Shi/new-navigation/new-navigation";
 import { ControllerBraiinsHomeComponent } from "src/app/edge/live/Controller/Io/Braiins/new-navigation/new-navigation";
 import { ControllerBraiinsModeComponent } from "src/app/edge/live/Controller/Io/Braiins/pages/mode/mode";
 import { ControllerBraiinsScheduleComponent } from "src/app/edge/live/Controller/Io/Braiins/pages/schedule/schedule.component";
@@ -558,6 +559,10 @@ export const commonRoutes: Routes = [
     {
         path: "common/weather/:componentId",
         component: WeatherHomeComponent,
+    },
+    {
+        path: "controller/heatpump-shi/:componentId",
+        component: ControllerHeatPumpShiHomeComponent,
     },
     {
         path: "common/storage/:componentId/scheduler-js-calendar",
