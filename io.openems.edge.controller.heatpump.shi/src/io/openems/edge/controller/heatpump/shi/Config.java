@@ -57,6 +57,9 @@ import org.osgi.service.metatype.annotations.ObjectClassDefinition;
 	@AttributeDefinition(name = "Maximum forecast charge power", description = "Upper limit in W for the battery charge power CREDITED to the forecast, i.e. how much of a predicted PV surplus the night-reserve calculation may assume actually reaches the battery. Use a value that holds for the whole plant over a whole day - deliberately NOT the momentary AllowedChargePower, which is 0 W with a full battery and would then wrongly suppress the recharge for the next 24 h. 0 = credit no future recharge at all: the conservative fallback whenever no dependable limit is known. Example: one hour of 10 kW surplus adds at most 1 kWh (before losses) at a 1000 W limit, instead of 10 kWh. Applies to both night reserve modes; in SOC_TRAJECTORY the battery capacity limits the recharge on top.")
 	int maxForecastChargePower() default 0;
 
+	@AttributeDefinition(name = "Maximum forecast charge power channel", description = "Optional Channel-Address the forecast charge power is read from instead of the fixed value above, e.g. 'ess0/MaxChargePower' - whatever channel the plant offers for the battery's own charge power capability. Kept configurable on purpose so this Controller stays independent of the inverter make. The value is peak-held over the forecast horizon, because a momentary reading is derated at high SoC or low temperature and a reserve that followed it would wobble. Empty = use the fixed value.")
+	String maxForecastChargePower_channel() default "";
+
 	@AttributeDefinition(name = "Forecast charge efficiency [%]", description = "Battery charge efficiency in % (1..100) applied to the credited recharge, so a predicted surplus is not booked as if it arrived in the battery loss-free.")
 	int forecastChargeEfficiency() default 95;
 

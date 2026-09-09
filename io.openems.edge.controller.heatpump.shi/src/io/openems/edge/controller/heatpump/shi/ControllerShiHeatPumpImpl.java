@@ -21,11 +21,14 @@ import org.osgi.service.component.annotations.ReferenceCardinality;
 import org.osgi.service.component.annotations.ReferencePolicy;
 import org.osgi.service.component.annotations.ReferencePolicyOption;
 import org.osgi.service.metatype.annotations.Designate;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import io.openems.common.exceptions.OpenemsError.OpenemsNamedException;
 import io.openems.common.types.ChannelAddress;
 import io.openems.common.types.MeterType;
 import io.openems.common.utils.DateUtils;
+import io.openems.edge.common.channel.Channel;
 import io.openems.edge.common.component.AbstractOpenemsComponent;
 import io.openems.edge.common.component.ComponentManager;
 import io.openems.edge.common.component.OpenemsComponent;
@@ -102,11 +105,20 @@ public class ControllerShiHeatPumpImpl extends AbstractOpenemsComponent
 	private static final long MIN_EVALUATION_GAP_MILLIS = 10_000;
 	private static final int GAP_CYCLE_FACTOR = 4;
 
+	/**
+	 * How long a charge-power reading is peak-held. One forecast horizon: long
+	 * enough that a derating at high SoC or low temperature cannot move the reserve,
+	 * short enough to follow a real change in what the plant can absorb.
+	 */
+	private static final long FORECAST_PEAK_HOLD_SECONDS = 24 * 60 * 60;
+
 	/** Valid range of the SHI setpoint registers (0.1 degC), from the protocol. */
 	private static final int MIN_HEATING_SETPOINT_DECIDEGREE = 150; // HR10001: 15 degC
 	private static final int MAX_HEATING_SETPOINT_DECIDEGREE = 750; // HR10001: 75 degC
 	private static final int MIN_HOT_WATER_SETPOINT_DECIDEGREE = 300; // HR10006: 30 degC
 	private static final int MAX_HOT_WATER_SETPOINT_DECIDEGREE = 750; // HR10006: 75 degC
+
+	private final Logger log = LoggerFactory.getLogger(ControllerShiHeatPumpImpl.class);
 
 	@Reference
 	private ConfigurationAdmin cm;
@@ -133,8 +145,12 @@ public class ControllerShiHeatPumpImpl extends AbstractOpenemsComponent
 	private int extensionMinDeltaDeciKelvin;
 	// Forecast charge/discharge model, converted once from the percent config
 	private int maxForecastChargePower;
+	private ChannelAddress maxForecastChargePowerChannel;
 	private float forecastChargeEfficiency;
 	private float forecastDischargeEfficiency;
+	// Peak-hold of the charge power read from that Channel, see forecastChargePower()
+	private int observedChargePower = 0;
+	private Instant observedChargePowerAt = Instant.MIN;
 	private Instant lastModeChange = Instant.MIN;
 	private boolean elevatedModeActive = false;
 	// Time-based hysteresis budgets (ms), evaluated against the wall clock rather
@@ -199,6 +215,20 @@ public class ControllerShiHeatPumpImpl extends AbstractOpenemsComponent
 		// Efficiencies are ratios in (0,1]; the lower clamp of 1 % keeps the division
 		// in the flow calculation finite on a misconfigured 0.
 		this.maxForecastChargePower = Math.max(0, config.maxForecastChargePower());
+		// Resolved per cycle, so a Component that appears later still works; only the
+		// ADDRESS is parsed here. Reset the peak-hold, the source may have changed.
+		this.maxForecastChargePowerChannel = null;
+		this.observedChargePower = 0;
+		this.observedChargePowerAt = Instant.MIN;
+		var address = config.maxForecastChargePower_channel();
+		if (address != null && !address.isBlank()) {
+			try {
+				this.maxForecastChargePowerChannel = ChannelAddress.fromString(address.trim());
+			} catch (OpenemsNamedException e) {
+				this.logWarn(this.log, "Cannot parse the forecast charge power Channel-Address [" + address + "]");
+			}
+		}
+		this._setForecastChargePowerChannelInvalid(false);
 		this.forecastChargeEfficiency = clamp(1, config.forecastChargeEfficiency(), 100) / 100F;
 		this.forecastDischargeEfficiency = clamp(1, config.forecastDischargeEfficiency(), 100) / 100F;
 		OpenemsComponent.updateReferenceFilter(this.cm, this.servicePid(), "heatPump", config.heatPump_id());
@@ -854,7 +884,7 @@ public class ControllerShiHeatPumpImpl extends AbstractOpenemsComponent
 	 */
 	private BatteryReserveCalculator.Result calculateBatteryReserve() {
 		var calculator = new BatteryReserveCalculator(this.config.nightReserveMode(), this.config.minSoc(),
-				this.config.nightReserveBuffer(), this.maxForecastChargePower, this.forecastChargeEfficiency,
+				this.config.nightReserveBuffer(), this.forecastChargePower(), this.forecastChargeEfficiency,
 				this.forecastDischargeEfficiency);
 		var essCapacity = this.sum.getEssCapacity().orElse(0);
 		var usableEnergy = calculator.usableEnergy(this.sum.getEssSoc().orElse(0), essCapacity);
@@ -883,6 +913,56 @@ public class ControllerShiHeatPumpImpl extends AbstractOpenemsComponent
 				this.predictorManager.getPrediction(SUM_UNMANAGED_CONSUMPTION_ACTIVE_POWER).toMapWithAllQuarters(),
 				this.predictorManager.getPrediction(SUM_CONSUMPTION_ACTIVE_POWER).toMapWithAllQuarters(),
 				heatPumpPrediction.toMapWithAllQuarters());
+	}
+
+	/**
+	 * The battery charge power the forecast may credit, in W.
+	 *
+	 * <p>
+	 * Read from the configured Channel when one is set, otherwise the fixed
+	 * configured value. Deliberately a Channel ADDRESS rather than a dependency on
+	 * some ESS nature: no standard nature publishes the battery's own charge
+	 * capability. {@code AllowedChargePower} is not it - it is dynamic and reads 0 W
+	 * on a full battery, which would suppress the whole next day's recharge - and
+	 * {@code MaxApparentPower} is the inverter rating, not the battery's. Which
+	 * Channel does carry it depends on the make, so the plant names it and this
+	 * Controller stays independent of the inverter.
+	 *
+	 * <p>
+	 * The reading is PEAK-HELD over the forecast horizon instead of used directly. A
+	 * momentary value is derated at high SoC or low temperature, and a reserve that
+	 * followed it would move for reasons that say nothing about the coming day - the
+	 * kind of wobble that revokes support in the middle of a run. Holding the peak
+	 * keeps the envelope of what the plant demonstrably absorbs, and letting it
+	 * expire after the horizon lets it follow a real seasonal change. Magnitude
+	 * only, since a charge power may be published with either sign.
+	 *
+	 * @return the charge power in W to credit (&gt;= 0)
+	 */
+	private int forecastChargePower() {
+		if (this.maxForecastChargePowerChannel == null) {
+			return this.maxForecastChargePower;
+		}
+		Integer sample;
+		try {
+			Channel<?> channel = this.componentManager.getChannel(this.maxForecastChargePowerChannel);
+			sample = channel.value().asOptional() //
+					.filter(Integer.class::isInstance).map(Integer.class::cast) //
+					.map(Math::abs).orElse(null);
+			this._setForecastChargePowerChannelInvalid(false);
+		} catch (OpenemsNamedException | IllegalArgumentException e) {
+			this._setForecastChargePowerChannelInvalid(true);
+			return this.maxForecastChargePower;
+		}
+		var now = Instant.now(this.componentManager.getClock());
+		if (sample != null && (sample >= this.observedChargePower
+				|| this.observedChargePowerAt.plusSeconds(FORECAST_PEAK_HOLD_SECONDS).isBefore(now))) {
+			this.observedChargePower = sample;
+			this.observedChargePowerAt = now;
+		}
+		// Nothing observed yet (no value, or a Component that is not up): fall back to
+		// the configured value rather than crediting an unfounded recharge.
+		return this.observedChargePowerAt == Instant.MIN ? this.maxForecastChargePower : this.observedChargePower;
 	}
 
 	/**

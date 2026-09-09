@@ -2659,6 +2659,116 @@ class ControllerShiHeatPumpImplTest {
 				.deactivate();
 	}
 
+	/**
+	 * Runs one cycle of the {@link #rechargeWindowPredictor} forecast with the
+	 * forecast charge power read from a Channel instead of the fixed value.
+	 *
+	 * @param channelAddress the Channel-Address to read the charge power from
+	 * @return the activated {@link ControllerTest}, ready for further cases
+	 * @throws Exception on error
+	 */
+	private static ControllerTest chargePowerFromChannelTest(String channelAddress) throws Exception {
+		var clock = createDummyClock();
+		var cm = new DummyComponentManager(clock);
+		var sum = new DummySum();
+		return new ControllerTest(new ControllerShiHeatPumpImpl()) //
+				.addReference("cm", new DummyConfigurationAdmin()) //
+				.addReference("componentManager", cm) //
+				.addReference("sum", sum) //
+				.addReference("predictorManager", rechargeWindowPredictor(cm, sum, Instant.now(clock))) //
+				.addReference("heatPump", new DummyHeatShiHeatPump("heatPump0")) //
+				.addComponent(new DummyManagedSymmetricEss("ess0") //
+						.setPower(new DummyPower(10_000))) //
+				.activate(MyConfig.create() //
+						.setId("ctrl0") //
+						.setHeatPumpId("heatPump0") //
+						.setEssId("ess0") //
+						.setHeatPumpPosition(HeatPumpPosition.GRID_SIDE_OF_GRID_METER) //
+						.setMinSoc(15) //
+						.setNightReserveBuffer(100) //
+						.setNightReserveMode(NightReserveMode.MAX_DEFICIT) //
+						// The fixed value credits nothing; everything below has to come from
+						// the Channel.
+						.setMaxForecastChargePower(0) //
+						.setMaxForecastChargePowerChannel(channelAddress) //
+						.setForecastChargeEfficiency(100) //
+						.setForecastDischargeEfficiency(100) //
+						.build());
+	}
+
+	@Test
+	void testForecastChargePowerReadFromAChannelIsPeakHeld() throws Exception {
+		// Any Channel the plant offers can be named - this Controller must not depend
+		// on one particular inverter make, and no standard nature publishes the
+		// battery's own charge capability.
+		chargePowerFromChannelTest("ess0/AllowedChargePower") //
+				// A charge power may be published with either sign, so the magnitude counts.
+				// 1 kW credited turns the forecast's 10 kWh window into 1 kWh, leaving a
+				// 3000 Wh cumulative deficit of the 5000 Wh usable -> 2000 Wh free.
+				.next(new TestCase("1 kW reported: the Channel value is used, not the fixed 0") //
+						.input("ess0", ManagedSymmetricEss.ChannelId.ALLOWED_CHARGE_POWER, -1000) //
+						.input("_sum", Sum.ChannelId.GRID_ACTIVE_POWER, 0) //
+						.input("_sum", Sum.ChannelId.ESS_DISCHARGE_POWER, 0) //
+						.input("_sum", Sum.ChannelId.ESS_ACTIVE_POWER, 0) //
+						.input("_sum", Sum.ChannelId.ESS_SOC, 65) //
+						.input("_sum", Sum.ChannelId.ESS_CAPACITY, 10_000) //
+						.input("heatPump0", ElectricityMeter.ChannelId.ACTIVE_POWER, 0) //
+						.output(ControllerShiHeatPump.ChannelId.FORECAST_CHARGE_POWER_CHANNEL_INVALID, false) //
+						.output(ControllerShiHeatPump.ChannelId.FREE_BATTERY_ENERGY, 2000)) //
+				// THE case this is all about: the battery is full and reports 0 W. Following
+				// that momentarily would credit no recharge for the whole next day and move
+				// the reserve for a reason that says nothing about tomorrow. The peak-hold
+				// keeps the 1 kW envelope.
+				.next(new TestCase("Battery full, 0 W reported: the peak is held") //
+						.input("ess0", ManagedSymmetricEss.ChannelId.ALLOWED_CHARGE_POWER, 0) //
+						.output(ControllerShiHeatPump.ChannelId.FREE_BATTERY_ENERGY, 2000)) //
+				// A genuinely higher capability raises the envelope immediately.
+				.next(new TestCase("10 kW reported: the envelope follows upwards at once") //
+						.input("ess0", ManagedSymmetricEss.ChannelId.ALLOWED_CHARGE_POWER, -10_000) //
+						.output(ControllerShiHeatPump.ChannelId.FREE_BATTERY_ENERGY, 3000)) //
+				.deactivate();
+	}
+
+	@Test
+	void testUnresolvableForecastChargePowerChannelFallsBackToTheFixedValue() throws Exception {
+		var clock = createDummyClock();
+		var cm = new DummyComponentManager(clock);
+		var sum = new DummySum();
+		new ControllerTest(new ControllerShiHeatPumpImpl()) //
+				.addReference("cm", new DummyConfigurationAdmin()) //
+				.addReference("componentManager", cm) //
+				.addReference("sum", sum) //
+				.addReference("predictorManager", rechargeWindowPredictor(cm, sum, Instant.now(clock))) //
+				.addReference("heatPump", new DummyHeatShiHeatPump("heatPump0")) //
+				.addComponent(new DummyManagedSymmetricEss("ess0") //
+						.setPower(new DummyPower(10_000))) //
+				.activate(MyConfig.create() //
+						.setId("ctrl0") //
+						.setHeatPumpId("heatPump0") //
+						.setEssId("ess0") //
+						.setHeatPumpPosition(HeatPumpPosition.GRID_SIDE_OF_GRID_METER) //
+						.setMinSoc(15) //
+						.setNightReserveBuffer(100) //
+						.setNightReserveMode(NightReserveMode.MAX_DEFICIT) //
+						.setMaxForecastChargePower(1000) //
+						.setMaxForecastChargePowerChannel("doesNotExist0/AllowedChargePower") //
+						.setForecastChargeEfficiency(100) //
+						.setForecastDischargeEfficiency(100) //
+						.build()) //
+				// A misconfigured address must be visible rather than silently crediting
+				// nothing, which would look like a broken reserve. The fixed 1 kW applies.
+				.next(new TestCase("Address cannot be resolved: warning raised, fixed value used") //
+						.input("_sum", Sum.ChannelId.GRID_ACTIVE_POWER, 0) //
+						.input("_sum", Sum.ChannelId.ESS_DISCHARGE_POWER, 0) //
+						.input("_sum", Sum.ChannelId.ESS_ACTIVE_POWER, 0) //
+						.input("_sum", Sum.ChannelId.ESS_SOC, 65) //
+						.input("_sum", Sum.ChannelId.ESS_CAPACITY, 10_000) //
+						.input("heatPump0", ElectricityMeter.ChannelId.ACTIVE_POWER, 0) //
+						.output(ControllerShiHeatPump.ChannelId.FORECAST_CHARGE_POWER_CHANNEL_INVALID, true) //
+						.output(ControllerShiHeatPump.ChannelId.FREE_BATTERY_ENERGY, 2000)) //
+				.deactivate();
+	}
+
 	@Test
 	void testForecastFlowsAccountForBatteryLosses() throws Exception {
 		// Deliberately exaggerated efficiencies, so the arithmetic is visible.

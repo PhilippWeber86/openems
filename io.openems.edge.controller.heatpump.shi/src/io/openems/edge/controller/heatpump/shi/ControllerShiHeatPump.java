@@ -55,6 +55,9 @@ public interface ControllerShiHeatPump extends OpenemsComponent {
 						+ "so no elevated mode and no battery support are granted (fail-safe).")), //
 		CONTROL_NOT_ALLOWED(Doc.of(Level.WARNING) //
 				.text("The heat pump device is in read-only mode - the Controller cannot write any setpoints.")), //
+		FORECAST_CHARGE_POWER_CHANNEL_INVALID(Doc.of(Level.WARNING) //
+				.text("The configured Channel-Address for the forecast charge power cannot be resolved - "
+						+ "the fixed configured value is used instead.")), //
 		METER_TYPE_MISMATCH(Doc.of(Level.WARNING) //
 				.text("Heat pump Meter-Type does not match the configured heat pump position: "
 						+ "BEHIND_GRID_METER expects CONSUMPTION_METERED, "
@@ -160,6 +163,20 @@ public interface ControllerShiHeatPump extends OpenemsComponent {
 	 */
 	public default void _setElevatedModeActive(boolean value) {
 		this.getElevatedModeActiveChannel().setNextValue(value);
+	}
+
+	public default StateChannel getForecastChargePowerChannelInvalidChannel() {
+		return this.channel(ChannelId.FORECAST_CHARGE_POWER_CHANNEL_INVALID);
+	}
+
+	/**
+	 * Internal method to set the 'nextValue' on
+	 * {@link ChannelId#FORECAST_CHARGE_POWER_CHANNEL_INVALID} Channel.
+	 *
+	 * @param value the next value
+	 */
+	public default void _setForecastChargePowerChannelInvalid(boolean value) {
+		this.getForecastChargePowerChannelInvalidChannel().setNextValue(value);
 	}
 
 	public default Channel<DecisionReason> getDecisionReasonChannel() {
