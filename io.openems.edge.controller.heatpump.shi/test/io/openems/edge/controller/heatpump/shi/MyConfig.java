@@ -20,6 +20,9 @@ public class MyConfig extends AbstractComponentConfig implements Config {
 		private NightReserveMode nightReserveMode = NightReserveMode.MAX_DEFICIT;
 		private int minSoc = 15;
 		private int nightReserveBuffer = 120;
+		private int maxForecastChargePower = 0;
+		private int forecastChargeEfficiency = 95;
+		private int forecastDischargeEfficiency = 95;
 		private int maxBatterySupportPower = 0;
 		private int minimumSwitchingTime = 300;
 		private int boostConfirmationSeconds = 0;
@@ -132,6 +135,21 @@ public class MyConfig extends AbstractComponentConfig implements Config {
 			return this;
 		}
 
+		public Builder setMaxForecastChargePower(int value) {
+			this.maxForecastChargePower = value;
+			return this;
+		}
+
+		public Builder setForecastChargeEfficiency(int value) {
+			this.forecastChargeEfficiency = value;
+			return this;
+		}
+
+		public Builder setForecastDischargeEfficiency(int value) {
+			this.forecastDischargeEfficiency = value;
+			return this;
+		}
+
 		public Builder setEnabled(boolean value) {
 			this.enabled = value;
 			return this;
@@ -216,6 +234,21 @@ public class MyConfig extends AbstractComponentConfig implements Config {
 	@Override
 	public int nightReserveBuffer() {
 		return this.builder.nightReserveBuffer;
+	}
+
+	@Override
+	public int maxForecastChargePower() {
+		return this.builder.maxForecastChargePower;
+	}
+
+	@Override
+	public int forecastChargeEfficiency() {
+		return this.builder.forecastChargeEfficiency;
+	}
+
+	@Override
+	public int forecastDischargeEfficiency() {
+		return this.builder.forecastDischargeEfficiency;
 	}
 
 	@Override

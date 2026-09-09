@@ -1607,6 +1607,9 @@ class ControllerShiHeatPumpImplTest {
 						.setEssId("ess0") //
 						.setHeatPumpPosition(HeatPumpPosition.GRID_SIDE_OF_GRID_METER) //
 						.setMinSoc(15) //
+						// Lossless, so this test asserts the substituted forecast value alone
+						// (the loss model has its own tests).
+						.setForecastDischargeEfficiency(100) //
 						.build()) // MAX_DEFICIT + 120 % buffer are the defaults
 				// The substituted total value (4000 W) is the ONLY load and must drive
 				// the reserve exactly: 4000 W over a quarter = 1000 Wh, x 120 % = 1200 Wh.
@@ -1997,6 +2000,12 @@ class ControllerShiHeatPumpImplTest {
 						.setMinSoc(15) //
 						.setNightReserveBuffer(100) //
 						.setNightReserveMode(NightReserveMode.MAX_DEFICIT) //
+						// Lossless and enough charge headroom for the whole forecast surplus,
+						// so this pair of tests isolates the MODE difference; the loss model
+						// and the charge limit have their own tests.
+						.setMaxForecastChargePower(5000) //
+						.setForecastChargeEfficiency(100) //
+						.setForecastDischargeEfficiency(100) //
 						.build()) //
 				// Low morning SoC (25 % -> 1000 Wh usable). The overnight deficit is far
 				// larger, so MAX_DEFICIT reserves everything -> nothing free.
@@ -2032,6 +2041,11 @@ class ControllerShiHeatPumpImplTest {
 						.setMinSoc(15) //
 						.setNightReserveBuffer(100) //
 						.setNightReserveMode(NightReserveMode.SOC_TRAJECTORY) //
+						// Same loss model as the MAX_DEFICIT counterpart, so only the mode
+						// differs between the two tests.
+						.setMaxForecastChargePower(5000) //
+						.setForecastChargeEfficiency(100) //
+						.setForecastDischargeEfficiency(100) //
 						.build()) //
 				// Same forecast and SoC as above, no buffer margin: the daytime PV
 				// refills the battery before the evening, so the trajectory frees the
@@ -2068,6 +2082,11 @@ class ControllerShiHeatPumpImplTest {
 						.setMinSoc(15) //
 						.setNightReserveBuffer(120) //
 						.setNightReserveMode(NightReserveMode.SOC_TRAJECTORY) //
+						// Same loss model as the freeing test, so the buffer cushion is the
+						// only reason nothing is freed here.
+						.setMaxForecastChargePower(5000) //
+						.setForecastChargeEfficiency(100) //
+						.setForecastDischargeEfficiency(100) //
 						.build()) //
 				// Same forecast as the freeing test, but with a 120 % buffer. The forecast
 				// only just covers the night (ends near Min-SoC), so it does not leave the
@@ -2083,6 +2102,191 @@ class ControllerShiHeatPumpImplTest {
 						.input("heatPump0", ElectricityMeter.ChannelId.ACTIVE_POWER, 0) //
 						.output(ControllerShiHeatPump.ChannelId.FREE_BATTERY_ENERGY, 0)) //
 				.deactivate();
+	}
+
+	/**
+	 * Forecast with an interim recharge window between two household deficits: 1 h
+	 * of 2000 W load, then 1 h of 10 kW production, then 1 h of 2000 W load again,
+	 * and nothing for the rest of the horizon. Each deficit hour costs 2000 Wh, so
+	 * how much of the 10 kWh window is credited as recharge decides the reserve
+	 * directly - which makes the charge model measurable in MAX_DEFICIT, where an
+	 * interim recharge reduces the running deficit.
+	 *
+	 * @param cm  the {@link DummyComponentManager}
+	 * @param sum the {@link DummySum}
+	 * @param now the start of the forecast
+	 * @return a {@link DummyPredictorManager} with the described forecast
+	 * @throws OpenemsNamedException on error
+	 */
+	private static DummyPredictorManager rechargeWindowPredictor(DummyComponentManager cm, DummySum sum, Instant now)
+			throws OpenemsNamedException {
+		var prod = new Integer[96];
+		var cons = new Integer[96];
+		Arrays.fill(prod, 0);
+		Arrays.fill(cons, 0);
+		for (var i = 0; i < 4; i++) {
+			cons[i] = 2000; // 1 h deficit -> 2000 Wh
+		}
+		for (var i = 4; i < 8; i++) {
+			prod[i] = 10_000; // 1 h of 10 kW surplus, far beyond any charge limit
+		}
+		for (var i = 8; i < 12; i++) {
+			cons[i] = 2000; // 1 h deficit again -> another 2000 Wh
+		}
+		return new DummyPredictorManager(//
+				new DummyPredictor("predictor0", cm, Prediction.from(sum, SUM_PRODUCTION_ACTIVE_POWER, now, prod),
+						SUM_PRODUCTION_ACTIVE_POWER),
+				new DummyPredictor("predictor1", cm, Prediction.from(sum, SUM_CONSUMPTION_ACTIVE_POWER, now, cons),
+						SUM_CONSUMPTION_ACTIVE_POWER));
+	}
+
+	/**
+	 * Runs one cycle on the {@link #rechargeWindowPredictor} forecast at 65 % SoC
+	 * (5000 Wh usable above the 15 % Min-SoC) and asserts the resulting free energy.
+	 *
+	 * @param maxForecastChargePower the forecast charge power limit in W
+	 * @param chargeEfficiency       the forecast charge efficiency in %
+	 * @param dischargeEfficiency    the forecast discharge efficiency in %
+	 * @param expectedFreeEnergy     the expected free battery energy in Wh
+	 * @throws Exception on error
+	 */
+	private static void assertFreeEnergyOnRechargeWindow(int maxForecastChargePower, int chargeEfficiency,
+			int dischargeEfficiency, int expectedFreeEnergy) throws Exception {
+		var clock = createDummyClock();
+		var cm = new DummyComponentManager(clock);
+		var sum = new DummySum();
+		new ControllerTest(new ControllerShiHeatPumpImpl()) //
+				.addReference("cm", new DummyConfigurationAdmin()) //
+				.addReference("componentManager", cm) //
+				.addReference("sum", sum) //
+				.addReference("predictorManager", rechargeWindowPredictor(cm, sum, Instant.now(clock))) //
+				.addReference("heatPump", new DummyHeatShiHeatPump("heatPump0")) //
+				.addComponent(new DummyManagedSymmetricEss("ess0") //
+						.setPower(new DummyPower(10_000))) //
+				.activate(MyConfig.create() //
+						.setId("ctrl0") //
+						.setHeatPumpId("heatPump0") //
+						.setEssId("ess0") //
+						.setHeatPumpPosition(HeatPumpPosition.GRID_SIDE_OF_GRID_METER) //
+						.setMinSoc(15) //
+						.setNightReserveBuffer(100) //
+						.setNightReserveMode(NightReserveMode.MAX_DEFICIT) //
+						.setMaxForecastChargePower(maxForecastChargePower) //
+						.setForecastChargeEfficiency(chargeEfficiency) //
+						.setForecastDischargeEfficiency(dischargeEfficiency) //
+						.build()) //
+				.next(new TestCase("Charge limit " + maxForecastChargePower + " W") //
+						.input("_sum", Sum.ChannelId.GRID_ACTIVE_POWER, 0) //
+						.input("_sum", Sum.ChannelId.ESS_DISCHARGE_POWER, 0) //
+						.input("_sum", Sum.ChannelId.ESS_ACTIVE_POWER, 0) //
+						.input("_sum", Sum.ChannelId.ESS_SOC, 65) //
+						.input("_sum", Sum.ChannelId.ESS_CAPACITY, 10_000) //
+						.input("heatPump0", ElectricityMeter.ChannelId.ACTIVE_POWER, 0) //
+						.output(ControllerShiHeatPump.ChannelId.FREE_BATTERY_ENERGY, expectedFreeEnergy)) //
+				.deactivate();
+	}
+
+	@Test
+	void testForecastRechargeLimitedByChargePower() throws Exception {
+		// The forecast offers 10 kWh of recharge between the two 2000 Wh deficits.
+		// Lossless here, so the charge POWER limit is the only thing at work.
+		//
+		// Plenty of charge headroom: the window wipes out the first deficit entirely,
+		// so the reserve is a single 2000 Wh deficit and 3000 of the 5000 Wh are free.
+		assertFreeEnergyOnRechargeWindow(10_000, 100, 100, 3000);
+		// A 1000 W limit turns the same hour into 1000 Wh of recharge - not 10 kWh. The
+		// first deficit is only partly repaid, so the cumulative deficit grows to
+		// 2000 - 1000 + 2000 = 3000 Wh and just 2000 Wh stay free. This is the case the
+		// unlimited model got wrong: it credited a 10 kW surplus to a 1 kW battery.
+		assertFreeEnergyOnRechargeWindow(1000, 100, 100, 2000);
+		// No dependable plant limit configured (the default): credit NO future
+		// recharge. Both deficits then add up to 4000 Wh and only 1000 Wh are free -
+		// the conservative fallback.
+		assertFreeEnergyOnRechargeWindow(0, 100, 100, 1000);
+	}
+
+	@Test
+	void testHeatPumpPredictionAboveConsumptionCreatesNoSurplus() throws Exception {
+		var clock = createDummyClock();
+		final var cm = new DummyComponentManager(clock);
+		final var sum = new DummySum();
+		var prod = new Integer[96];
+		var cons = new Integer[96];
+		var pump = new Integer[96];
+		Arrays.fill(prod, 0);
+		Arrays.fill(cons, 0);
+		Arrays.fill(pump, 0);
+		for (var i = 0; i < 4; i++) {
+			cons[i] = 2000; // 1 h deficit -> 2000 Wh
+		}
+		for (var i = 4; i < 8; i++) {
+			cons[i] = 1000; // consumption forecast ...
+			pump[i] = 3000; // ... below the heat-pump forecast for the same quarter
+		}
+		for (var i = 8; i < 12; i++) {
+			cons[i] = 2000; // 1 h deficit again -> another 2000 Wh
+		}
+		var heatPumpChannel = new ChannelAddress("heatPump0", ElectricityMeter.ChannelId.ACTIVE_POWER.id());
+		new ControllerTest(new ControllerShiHeatPumpImpl()) //
+				.addReference("cm", new DummyConfigurationAdmin()) //
+				.addReference("componentManager", cm) //
+				.addReference("sum", sum) //
+				.addReference("predictorManager", new DummyPredictorManager(//
+						new DummyPredictor("predictor0", cm,
+								Prediction.from(sum, SUM_PRODUCTION_ACTIVE_POWER, Instant.now(clock), prod),
+								SUM_PRODUCTION_ACTIVE_POWER),
+						new DummyPredictor("predictor1", cm,
+								Prediction.from(sum, SUM_CONSUMPTION_ACTIVE_POWER, Instant.now(clock), cons),
+								SUM_CONSUMPTION_ACTIVE_POWER),
+						new DummyPredictor("predictor2", cm,
+								Prediction.from(sum, heatPumpChannel, Instant.now(clock), pump), heatPumpChannel))) //
+				.addReference("heatPump", new DummyHeatShiHeatPump("heatPump0") //
+						.withMeterType(MeterType.CONSUMPTION_METERED)) //
+				.addComponent(new DummyManagedSymmetricEss("ess0") //
+						.setPower(new DummyPower(10_000))) //
+				.activate(MyConfig.create() //
+						.setId("ctrl0") //
+						.setHeatPumpId("heatPump0") //
+						.setEssId("ess0") //
+						// Behind the meter the heat-pump prediction is subtracted from the
+						// consumption prediction - the case this test is about.
+						.setHeatPumpPosition(HeatPumpPosition.BEHIND_GRID_METER) //
+						.setMinSoc(15) //
+						.setNightReserveBuffer(100) //
+						.setMaxForecastChargePower(5000) //
+						.setForecastChargeEfficiency(100) //
+						.setForecastDischargeEfficiency(100) //
+						.build()) //
+				// The two forecasts come from different predictors, so the heat-pump value
+				// can exceed the total consumption for the same quarter. Subtracting it
+				// unclamped invents a 2000 W SURPLUS out of a quarter that has no
+				// production at all - and with charge headroom configured that phantom
+				// surplus is credited as recharge, repaying the first deficit and halving
+				// the reserve. Clamped at zero the quarter is simply neutral: both deficits
+				// stand, the reserve is 4000 Wh and 1000 of the 5000 usable Wh are free.
+				.next(new TestCase("Heat-pump forecast above consumption: no phantom surplus") //
+						.input("_sum", Sum.ChannelId.GRID_ACTIVE_POWER, 0) //
+						.input("_sum", Sum.ChannelId.ESS_DISCHARGE_POWER, 0) //
+						.input("_sum", Sum.ChannelId.ESS_ACTIVE_POWER, 0) //
+						.input("_sum", Sum.ChannelId.ESS_SOC, 65) //
+						.input("_sum", Sum.ChannelId.ESS_CAPACITY, 10_000) //
+						.input("heatPump0", ElectricityMeter.ChannelId.ACTIVE_POWER, 0) //
+						.output(ControllerShiHeatPump.ChannelId.NIGHT_RESERVE_ENERGY, 4000) //
+						.output(ControllerShiHeatPump.ChannelId.FREE_BATTERY_ENERGY, 1000)) //
+				.deactivate();
+	}
+
+	@Test
+	void testForecastFlowsAccountForBatteryLosses() throws Exception {
+		// Deliberately exaggerated efficiencies, so the arithmetic is visible.
+		//
+		// 80 % discharge: covering 2000 Wh at the AC side costs 2500 Wh of battery, so
+		// the reserve is 2500 instead of 2000 Wh and 2500 of the 5000 Wh stay free.
+		assertFreeEnergyOnRechargeWindow(10_000, 100, 80, 2500);
+		// 50 % charge on a 1000 W limit: only 500 of the 1000 Wh the window could
+		// deliver arrive in the battery, so the cumulative deficit becomes
+		// 2000 - 500 + 2000 = 3500 Wh and 1500 Wh stay free.
+		assertFreeEnergyOnRechargeWindow(1000, 50, 100, 1500);
 	}
 
 	@Test

@@ -142,6 +142,10 @@ public class ControllerShiHeatPumpImpl extends AbstractOpenemsComponent
 	private int heatingSetpointDeciDegree;
 	private int hotWaterSetpointDeciDegree;
 	private int extensionMinDeltaDeciKelvin;
+	// Forecast charge/discharge model, converted once from the percent config
+	private int maxForecastChargePower;
+	private float forecastChargeEfficiency;
+	private float forecastDischargeEfficiency;
 	private Instant lastModeChange = Instant.MIN;
 	private boolean elevatedModeActive = false;
 	// Time-based hysteresis budgets (ms), evaluated against the wall clock rather
@@ -203,6 +207,11 @@ public class ControllerShiHeatPumpImpl extends AbstractOpenemsComponent
 		this.hotWaterSetpointDeciDegree = clamp(MIN_HOT_WATER_SETPOINT_DECIDEGREE,
 				(int) Math.round(config.hotWaterSetpoint() * 10), MAX_HOT_WATER_SETPOINT_DECIDEGREE);
 		this.extensionMinDeltaDeciKelvin = Math.max(0, (int) Math.round(config.extensionMinTemperatureDelta() * 10));
+		// Efficiencies are ratios in (0,1]; the lower clamp of 1 % keeps the division
+		// in the flow calculation finite on a misconfigured 0.
+		this.maxForecastChargePower = Math.max(0, config.maxForecastChargePower());
+		this.forecastChargeEfficiency = clamp(1, config.forecastChargeEfficiency(), 100) / 100F;
+		this.forecastDischargeEfficiency = clamp(1, config.forecastDischargeEfficiency(), 100) / 100F;
 		OpenemsComponent.updateReferenceFilter(this.cm, this.servicePid(), "heatPump", config.heatPump_id());
 	}
 
@@ -992,6 +1001,17 @@ public class ControllerShiHeatPumpImpl extends AbstractOpenemsComponent
 	 * quarter and default to 0 W where missing (conservative). The first quarter
 	 * counts only its remaining fraction.
 	 *
+	 * <p>
+	 * The flows are BATTERY-side energy, so the charge path is limited to the
+	 * configured forecast charge power and reduced by the charge efficiency, while
+	 * the discharge path is inflated by the discharge efficiency. Both night reserve
+	 * modes consume these flows, so both see the same physics: a surplus the battery
+	 * cannot absorb is not credited as recharge, and a deficit costs more battery
+	 * energy than it delivers to the household. With the charge power at 0 (no
+	 * dependable plant limit known) no future recharge is credited at all.
+	 * Time-dependent charge restrictions are not modelled - the only one known here
+	 * is the battery capacity, which SOC_TRAJECTORY applies on top.
+	 *
 	 * @param productionPrediction production prediction per quarter-hour
 	 * @param consumptions         the validated household consumption per quarter,
 	 *                             keyed by time (complete, no null values)
@@ -1020,7 +1040,19 @@ public class ControllerShiHeatPumpImpl extends AbstractOpenemsComponent
 			var production = productionValue != null ? productionValue : 0;
 			var heatPumpValue = heatPumps.get(entry.getKey());
 			var heatPump = heatPumpValue != null ? Math.max(0, heatPumpValue) : 0;
-			flows[i++] = (production - consumption + heatPump) * durationHours;
+			// The heat pump is removed from the consumption forecast, but never beyond
+			// zero: the two come from different predictors, so a heat-pump prediction
+			// above the total consumption must not turn into extra surplus.
+			var householdPower = Math.max(0, consumption - heatPump);
+			var netPower = production - householdPower;
+			flows[i++] = netPower >= 0 //
+					// Charging: only what the plant can actually absorb, times the charge
+					// efficiency. Without the power limit an hour of 10 kW surplus is
+					// credited as 10 kWh of recharge even on a battery that takes 1 kW.
+					? Math.min(netPower, this.maxForecastChargePower) * this.forecastChargeEfficiency * durationHours
+					// Discharging: serving the deficit at the AC side costs MORE than the
+					// deficit itself, so the reserve has to hold the losses as well.
+					: netPower / this.forecastDischargeEfficiency * durationHours;
 		}
 		return flows;
 	}

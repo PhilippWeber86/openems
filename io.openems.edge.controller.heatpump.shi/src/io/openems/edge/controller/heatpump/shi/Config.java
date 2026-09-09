@@ -54,6 +54,15 @@ import org.osgi.service.metatype.annotations.ObjectClassDefinition;
 	@AttributeDefinition(name = "Night reserve buffer", description = "Percentage applied to the forecasted household deficit until the next PV surplus (>100 adds a safety margin). The resulting energy is reserved in the battery for the household.")
 	int nightReserveBuffer() default 120;
 
+	@AttributeDefinition(name = "Maximum forecast charge power", description = "Upper limit in W for the battery charge power CREDITED to the forecast, i.e. how much of a predicted PV surplus the night-reserve calculation may assume actually reaches the battery. Use a value that holds for the whole plant over a whole day - deliberately NOT the momentary AllowedChargePower, which is 0 W with a full battery and would then wrongly suppress the recharge for the next 24 h. 0 = credit no future recharge at all: the conservative fallback whenever no dependable limit is known. Example: one hour of 10 kW surplus adds at most 1 kWh (before losses) at a 1000 W limit, instead of 10 kWh. Applies to both night reserve modes; in SOC_TRAJECTORY the battery capacity limits the recharge on top.")
+	int maxForecastChargePower() default 0;
+
+	@AttributeDefinition(name = "Forecast charge efficiency [%]", description = "Battery charge efficiency in % (1..100) applied to the credited recharge, so a predicted surplus is not booked as if it arrived in the battery loss-free.")
+	int forecastChargeEfficiency() default 95;
+
+	@AttributeDefinition(name = "Forecast discharge efficiency [%]", description = "Battery discharge efficiency in % (1..100) applied to the forecasted household deficit: covering 1000 Wh at the AC side removes 1000 / efficiency Wh from the battery, so the night reserve accounts for that loss.")
+	int forecastDischargeEfficiency() default 95;
+
 	@AttributeDefinition(name = "Maximum battery support power", description = "Optional upper limit in W for the battery power used to support the heat pump. 0 = no limit (use the full deliverable ESS power). Only needed if the heat pump should deliberately get less than the technically possible ESS power.")
 	int maxBatterySupportPower() default 0;
 
