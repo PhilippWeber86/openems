@@ -103,6 +103,7 @@
 	bnd.identity;id='io.openems.edge.controller.evcs.fixactivepower',\
 	bnd.identity;id='io.openems.edge.controller.evse',\
 	bnd.identity;id='io.openems.edge.controller.generic.jsonlogic',\
+	bnd.identity;id='io.openems.edge.controller.heatpump.shi',\
 	bnd.identity;id='io.openems.edge.controller.highloadtimeslot',\
 	bnd.identity;id='io.openems.edge.controller.io.alarm',\
 	bnd.identity;id='io.openems.edge.controller.io.analog',\
@@ -312,6 +313,7 @@
 	io.openems.edge.controller.evcs.fixactivepower;version=snapshot,\
 	io.openems.edge.controller.evse;version=snapshot,\
 	io.openems.edge.controller.generic.jsonlogic;version=snapshot,\
+	io.openems.edge.controller.heatpump.shi;version=snapshot,\
 	io.openems.edge.controller.highloadtimeslot;version=snapshot,\
 	io.openems.edge.controller.io.alarm;version=snapshot,\
 	io.openems.edge.controller.io.analog;version=snapshot,\
