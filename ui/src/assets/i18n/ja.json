@@ -348,6 +348,15 @@
         },
         "PHASES_INFO": "技術的な理由により、個々のフェーズの合計は、合計の合計とは異なることがあります。",
         "SELFCONSUMPTION_INFO": "自己消費は、現在発電された出力のうち、直接消費と蓄電池負荷自体に使用できる割合を示します。",
+        "SHI_HEAT_PUMP": {
+          "BATTERY_SUPPORT_ACTIVE": "Battery supplying heat pump",
+          "BOOST_ACTIVE": "Boost (PV surplus)",
+          "FREE_BATTERY_ENERGY": "Free battery energy",
+          "HEAT_PUMP_POWER": "Heat pump power",
+          "NIGHT_RESERVE": "Household night reserve",
+          "NORMAL_MODE": "Normal operation",
+          "RUN_EXTENSION": "Hot-water run extension"
+        },
         "SINGLETHRESHOLD": {
           "ABOVE": "その上",
           "BEHAVIOUR": "行動",
