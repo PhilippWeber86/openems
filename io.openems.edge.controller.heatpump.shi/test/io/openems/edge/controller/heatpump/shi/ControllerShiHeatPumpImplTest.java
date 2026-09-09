@@ -2665,13 +2665,15 @@ class ControllerShiHeatPumpImplTest {
 	 * Runs one cycle of the {@link #rechargeWindowPredictor} forecast with the
 	 * charge power derived from the capacity, and asserts the free energy.
 	 *
-	 * @param cRate              the configured charge rate in C
+	 * @param measuredChargePower the maximum charge power ever measured in W
+	 *                            (negative); 0 = never charged
+	 * @param cRate               the configured charge rate in C
 	 * @param absoluteOverride    the absolute override in W; 0 = derive
-	 * @param expectedFreeEnergy the expected free battery energy in Wh
+	 * @param expectedFreeEnergy  the expected free battery energy in Wh
 	 * @throws Exception on error
 	 */
-	private static void assertFreeEnergyWithChargeRate(double cRate, int absoluteOverride, int expectedFreeEnergy)
-			throws Exception {
+	private static void assertFreeEnergyWithChargeRate(int measuredChargePower, double cRate, int absoluteOverride,
+			int expectedFreeEnergy) throws Exception {
 		var clock = createDummyClock();
 		var cm = new DummyComponentManager(clock);
 		var sum = new DummySum();
@@ -2702,6 +2704,7 @@ class ControllerShiHeatPumpImplTest {
 						.input("_sum", Sum.ChannelId.ESS_ACTIVE_POWER, 0) //
 						.input("_sum", Sum.ChannelId.ESS_SOC, 65) //
 						.input("_sum", Sum.ChannelId.ESS_CAPACITY, 10_000) //
+						.input("_sum", Sum.ChannelId.ESS_MIN_DISCHARGE_POWER, measuredChargePower) //
 						.input("heatPump0", ElectricityMeter.ChannelId.ACTIVE_POWER, 0) //
 						.output(ControllerShiHeatPump.ChannelId.FREE_BATTERY_ENERGY, expectedFreeEnergy)) //
 				.deactivate();
@@ -2709,21 +2712,41 @@ class ControllerShiHeatPumpImplTest {
 
 	@Test
 	void testForecastChargePowerFollowsTheCapacityAndChargeRate() throws Exception {
-		// The charge power comes from the battery CAPACITY, a standard SymmetricEss
-		// Channel the reserve calculation already requires - so this needs nothing
-		// make-specific, and a capacity that is unavailable already releases nothing.
+		// Nothing measured yet (EssMinDischargePower 0), so the configured rate bridges
+		// until the plant has charged once. It applies to the battery CAPACITY, a
+		// standard SymmetricEss Channel the reserve calculation already requires - so
+		// no new way for the calculation to be unavailable, and nothing make-specific.
 		// 10 kWh of capacity, so 0.1 C = 1000 W: the forecast's 10 kWh window is
 		// credited as 1 kWh, leaving a 3000 Wh deficit of the 5000 Wh usable.
-		assertFreeEnergyWithChargeRate(0.1, 0, 2000);
+		assertFreeEnergyWithChargeRate(0, 0.1, 0, 2000);
 		// 0.5 C = 5000 W absorbs the whole window, so the first deficit is repaid and
 		// only the second one stands.
-		assertFreeEnergyWithChargeRate(0.5, 0, 3000);
+		assertFreeEnergyWithChargeRate(0, 0.5, 0, 3000);
 		// A slower battery credits less and therefore reserves MORE - the safe
 		// direction for a value that is an assumption rather than a measurement.
-		assertFreeEnergyWithChargeRate(0.02, 0, 1200);
+		assertFreeEnergyWithChargeRate(0, 0.02, 0, 1200);
 		// The absolute override wins over the rate when a plant's charge power is
 		// known and does not follow from its capacity.
-		assertFreeEnergyWithChargeRate(0.5, 1000, 2000);
+		assertFreeEnergyWithChargeRate(0, 0.5, 1000, 2000);
+	}
+
+	@Test
+	void testForecastChargePowerPrefersTheMeasuredMaximum() throws Exception {
+		// _sum/EssMinDischargePower is the maximum charge power ever MEASURED, as a
+		// negative value. Core.Sum maintains it as a running minimum of
+		// EssDischargePower - so a full battery reporting 0 W cannot lower it - and
+		// persists it through its own configuration. That needs no assumption about
+		// the battery at all, so it outranks the configured rate. The Energy
+		// Scheduler's GocBuilder derives its charge power from the same Channel.
+		//
+		// 1 kW measured against 0.5 C (= 5000 W) configured: the measurement governs,
+		// so only 1 kWh of the forecast's 10 kWh window is credited.
+		assertFreeEnergyWithChargeRate(-1000, 0.5, 0, 2000);
+		// A higher measured maximum credits more - the sign is a magnitude here.
+		assertFreeEnergyWithChargeRate(-10_000, 0.5, 0, 3000);
+		// The absolute override still outranks the measurement, for the case where the
+		// maximum EVER has become optimistic for an ageing battery.
+		assertFreeEnergyWithChargeRate(-10_000, 0.5, 1000, 2000);
 	}
 
 	@Test

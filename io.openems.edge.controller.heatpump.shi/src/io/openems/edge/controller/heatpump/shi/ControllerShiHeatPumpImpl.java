@@ -888,25 +888,35 @@ public class ControllerShiHeatPumpImpl extends AbstractOpenemsComponent
 	}
 
 	/**
-	 * The battery charge power the forecast may credit, in W: the configured charge
-	 * rate applied to the battery capacity, or the absolute override when one is
-	 * configured.
+	 * The battery charge power the forecast may credit, in W.
 	 *
 	 * <p>
-	 * Derived from the CAPACITY on purpose. It is a standard {@code SymmetricEss}
-	 * Channel and the reserve calculation already requires it - a capacity of 0
-	 * releases nothing - so expressing the charge power as a C-rate introduces no
-	 * new way for the calculation to be unavailable, and it needs nothing
-	 * make-specific. The obvious alternatives do not work: no ESS nature is required
-	 * to publish the battery's charge capability at all, the nature-declared
-	 * {@code AllowedChargePower} is momentary and reads 0 W on a full battery - which
-	 * would suppress the whole next day's recharge - and {@code MaxApparentPower} is
-	 * the inverter rating rather than the battery's.
+	 * Primary source is {@code _sum/EssMinDischargePower}: the maximum charge power
+	 * ever MEASURED, as a negative value. It is exactly the right figure and needs
+	 * no assumption about the battery - Core.Sum maintains it as a running minimum
+	 * of {@code EssDischargePower}, so a full battery reporting 0 W cannot lower it,
+	 * and it is persisted through the Core.Sum configuration, so it survives a
+	 * restart. The Energy Scheduler's {@code GocBuilder} derives its own maximum
+	 * charge power from the same Channel.
 	 *
 	 * <p>
-	 * A rate that is too low only credits less recharge, which enlarges the reserve:
-	 * the safe direction. Too high is the dangerous one, so the default stays at a
-	 * typical continuous rate rather than a peak.
+	 * The alternatives are all worse: no ESS nature is required to publish the
+	 * battery's charge capability, the nature-declared {@code AllowedChargePower} is
+	 * momentary and reads 0 W on a full battery - which would suppress the whole
+	 * next day's recharge - and {@code MaxApparentPower} is the inverter rating
+	 * rather than the battery's.
+	 *
+	 * <p>
+	 * Until a plant has ever charged, the measured value is 0 and says nothing. The
+	 * configured C-rate applied to the capacity bridges that: capacity is a standard
+	 * Channel the reserve calculation already requires, so it adds no new way for
+	 * the calculation to be unavailable. Both are overridden by an absolute value
+	 * for a plant whose charge power is known and follows from neither.
+	 *
+	 * <p>
+	 * One caveat of the measured value: it is the maximum EVER and never decays, so
+	 * an ageing battery keeps a historical peak. That over-credits slightly, which
+	 * is the unsafe direction - configure the absolute override if that matters.
 	 *
 	 * @param essCapacity the battery capacity in Wh
 	 * @return the charge power in W to credit (&gt;= 0)
@@ -914,6 +924,10 @@ public class ControllerShiHeatPumpImpl extends AbstractOpenemsComponent
 	private int forecastChargePower(int essCapacity) {
 		if (this.maxForecastChargePower > 0) {
 			return this.maxForecastChargePower;
+		}
+		var measured = Math.abs(this.sum.getEssMinDischargePower().orElse(0));
+		if (measured > 0) {
+			return measured;
 		}
 		return Math.max(0, Math.round(essCapacity * this.forecastChargeCRate));
 	}
