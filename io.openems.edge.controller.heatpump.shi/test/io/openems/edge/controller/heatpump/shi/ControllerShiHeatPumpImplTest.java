@@ -1569,6 +1569,36 @@ class ControllerShiHeatPumpImplTest {
 	}
 
 	@Test
+	void testDecisionReasonGetterReturnsTheEnum() throws Exception {
+		var clock = createDummyClock();
+		var controller = new ControllerShiHeatPumpImpl();
+		new ControllerTest(controller) //
+				.addReference("cm", new DummyConfigurationAdmin()) //
+				.addReference("componentManager", new DummyComponentManager(clock)) //
+				.addReference("sum", new DummySum()) //
+				.addReference("heatPump", new DummyHeatShiHeatPump("heatPump0")) //
+				.addComponent(new DummyManagedSymmetricEss("ess0") //
+						.setPower(new DummyPower(10_000))) //
+				.activate(MyConfig.create() //
+						.setId("ctrl0") //
+						.setHeatPumpId("heatPump0") //
+						.setEssId("ess0") //
+						.setHeatPumpPosition(HeatPumpPosition.GRID_SIDE_OF_GRID_METER) //
+						.build());
+
+		// An enum Channel stores the Integer option code, so a typed read has to go
+		// through asEnum(). Returning the raw Value<DecisionReason> compiles but throws
+		// a ClassCastException here - which no .output() assertion would ever notice,
+		// because those compare the option code.
+		for (var reason : DecisionReason.values()) {
+			controller._setDecisionReason(reason);
+			controller.getDecisionReasonChannel().nextProcessImage();
+
+			assertEquals(reason, controller.getDecisionReason());
+		}
+	}
+
+	@Test
 	void testDecisionReasonReportsTheSwitchingHysteresis() throws Exception {
 		var clock = createDummyClock();
 		var cm = new DummyComponentManager(clock);

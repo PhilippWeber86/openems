@@ -166,8 +166,19 @@ public interface ControllerShiHeatPump extends OpenemsComponent {
 		return this.channel(ChannelId.DECISION_REASON);
 	}
 
-	public default Value<DecisionReason> getDecisionReason() {
-		return this.getDecisionReasonChannel().value();
+	/**
+	 * Gets the reason for the current operating state. See
+	 * {@link ChannelId#DECISION_REASON}.
+	 *
+	 * <p>
+	 * An enum Channel holds its value as the Integer option code, so the value has
+	 * to be converted back with {@code asEnum()} - returning the raw
+	 * {@code Value<DecisionReason>} throws a ClassCastException on a typed read.
+	 *
+	 * @return the {@link DecisionReason}, UNDEFINED while none has been set
+	 */
+	public default DecisionReason getDecisionReason() {
+		return this.getDecisionReasonChannel().value().asEnum();
 	}
 
 	/**
