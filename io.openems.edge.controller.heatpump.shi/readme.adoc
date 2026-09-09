@@ -63,6 +63,23 @@ Two different gap rules coexist on purpose, and they protect opposite things:
 
 `BatteryReserveCalculatorTest` exercises this policy directly with plain forecast maps — reason mapping, the per-quarter channel fallback, the horizon check and both reserve modes — without any component harness.
 
+== Decision and device commands
+
+The Controller first decides ONE operating state for the cycle — `NORMAL`, `BOOST` or `RUN_EXTENSION` — and that state alone produces a complete `HeatPumpCommand`: heating mode and setpoint, hot-water mode and setpoint, LPC mode and PC limit. A single writer transfers it to the device.
+
+Before, each mode wrote its own subset of overlapping registers, so understanding which command ultimately held required knowing the call order: the run extension wrote the hot-water registers, and the normal-mode path released them again — guarded by a flag, and only because it happened to run afterwards. Now the state answers that question by itself.
+
+A `null` mode or setpoint in the command means "leave that register alone", which is a distinct outcome from writing 0: the SHI *rejects* a heating or hot-water command while the corresponding operating mode is switched off at the heat pump (status 0, e.g. heating in summer), so those registers must not be written at all in that case.
+
+Two things are deliberately *not* unified:
+
+* **The switch-off rules.** The boost holds through a decaying uncovered-time budget with a power dead-band, because dropping it aborts a committed compressor cycle. The run extension releases the instant coverage is lost, because it holds no cycle and the only thing at stake is not drawing grid power. Same-looking conditions, opposite correct answers.
+* **The fail-safe release.** On deactivation, on a heat-pump-ID change, on being disabled and when a cycle cannot complete, each register is still released independently and best-effort, outside the command path — one register the device rejects must not prevent releasing the others.
+
+`DecisionReason` names the binding cause of the current state, and it exists because "normal operation" explains nothing: a boost that is held back by a pending confirmation, by the restart lock, by the forecast veto or by a missing measurement looks identical from the outside. The reason is deliberately about the operating state only — why the *battery* is not supporting the heat pump is a separate question, since a boost never requires battery energy, and it is answered by `FreeBatteryEnergy`, `NightReserveEnergy` and the `NoPredictionAvailable` warning.
+
+`HeatPumpCommandTest` checks the command each state asks for without a device, a clock or a call order — including the register-range clamp and the "leave it alone" cases.
+
 == Components
 
 === Controller SHI Heat Pump

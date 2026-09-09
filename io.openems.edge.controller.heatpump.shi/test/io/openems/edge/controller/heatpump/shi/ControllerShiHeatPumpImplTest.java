@@ -1517,6 +1517,156 @@ class ControllerShiHeatPumpImplTest {
 	}
 
 	@Test
+	void testDecisionReasonNamesWhatHeldTheBoostBack() throws Exception {
+		var clock = createDummyClock();
+		var cm = new DummyComponentManager(clock);
+		var sum = new DummySum();
+		new ControllerTest(new ControllerShiHeatPumpImpl()) //
+				.addReference("cm", new DummyConfigurationAdmin()) //
+				.addReference("componentManager", cm) //
+				.addReference("sum", sum) //
+				.addReference("predictorManager", sunnyPredictor(cm, sum, Instant.now(clock))) //
+				.addReference("heatPump", new DummyHeatShiHeatPump("heatPump0")) //
+				.addComponent(new DummyManagedSymmetricEss("ess0") //
+						.setPower(new DummyPower(10_000))) //
+				.activate(MyConfig.create() //
+						.setId("ctrl0") //
+						.setHeatPumpId("heatPump0") //
+						.setEssId("ess0") //
+						.setHeatPumpPosition(HeatPumpPosition.GRID_SIDE_OF_GRID_METER) //
+						.setBoostConfirmationSeconds(20) //
+						.build()) //
+				// All three situations below look identical from the outside - the heat pump
+				// is simply not boosting - which is exactly why the reason is needed.
+				.next(new TestCase("No surplus: the sun is the binding cause") //
+						.input("_sum", Sum.ChannelId.GRID_ACTIVE_POWER, 0) //
+						.input("_sum", Sum.ChannelId.ESS_DISCHARGE_POWER, 0) //
+						.input("_sum", Sum.ChannelId.ESS_ACTIVE_POWER, 0) //
+						.input("_sum", Sum.ChannelId.ESS_SOC, 65) //
+						.input("_sum", Sum.ChannelId.ESS_CAPACITY, 10_000) //
+						.input("heatPump0", ElectricityMeter.ChannelId.ACTIVE_POWER, 0) //
+						.output(ControllerShiHeatPump.ChannelId.ELEVATED_MODE_ACTIVE, false) //
+						.output(ControllerShiHeatPump.ChannelId.DECISION_REASON, DecisionReason.SURPLUS_TOO_LOW)) //
+				.next(new TestCase("Surplus present: waiting for the confirmation time") //
+						.input("_sum", Sum.ChannelId.GRID_ACTIVE_POWER, -4000) //
+						.output(ControllerShiHeatPump.ChannelId.BOOST_PENDING, true) //
+						.output(ControllerShiHeatPump.ChannelId.DECISION_REASON,
+								DecisionReason.BOOST_CONFIRMATION_PENDING)) //
+				// Ten-second steps: a longer leap would exceed the evaluation gap cap and
+				// reset the accumulated confirmation instead of completing it.
+				.next(new TestCase("10 s of 20 s confirmed: still pending") //
+						.timeleap(clock, 10, ChronoUnit.SECONDS) //
+						.input("_sum", Sum.ChannelId.GRID_ACTIVE_POWER, -4000) //
+						.output(ControllerShiHeatPump.ChannelId.ELEVATED_MODE_ACTIVE, false) //
+						.output(ControllerShiHeatPump.ChannelId.DECISION_REASON,
+								DecisionReason.BOOST_CONFIRMATION_PENDING)) //
+				.next(new TestCase("Confirmation reached: the boost itself is the reason") //
+						.timeleap(clock, 10, ChronoUnit.SECONDS) //
+						.input("_sum", Sum.ChannelId.GRID_ACTIVE_POWER, -4000) //
+						.output(ControllerShiHeatPump.ChannelId.ELEVATED_MODE_ACTIVE, true) //
+						.output(ControllerShiHeatPump.ChannelId.DECISION_REASON, DecisionReason.BOOST_ACTIVE)) //
+				.deactivate();
+	}
+
+	@Test
+	void testDecisionReasonReportsTheSwitchingHysteresis() throws Exception {
+		var clock = createDummyClock();
+		var cm = new DummyComponentManager(clock);
+		var sum = new DummySum();
+		new ControllerTest(new ControllerShiHeatPumpImpl()) //
+				.addReference("cm", new DummyConfigurationAdmin()) //
+				.addReference("componentManager", cm) //
+				.addReference("sum", sum) //
+				.addReference("predictorManager", sunnyPredictor(cm, sum, Instant.now(clock))) //
+				.addReference("heatPump", new DummyHeatShiHeatPump("heatPump0")) //
+				.addComponent(new DummyManagedSymmetricEss("ess0") //
+						.setPower(new DummyPower(10_000))) //
+				.activate(MyConfig.create() //
+						.setId("ctrl0") //
+						.setHeatPumpId("heatPump0") //
+						.setEssId("ess0") //
+						.setHeatPumpPosition(HeatPumpPosition.GRID_SIDE_OF_GRID_METER) //
+						// Battery support off, so the coverage is the PV surplus alone and the
+						// boost can actually become uncovered; a short switching time so the
+						// restart lock can be reached without dozens of cycles.
+						.setEssSupportEnabled(false) //
+						.setMinimumSwitchingTime(10) //
+						.build()) //
+				.next(new TestCase("Surplus: boost starts") //
+						.input("_sum", Sum.ChannelId.GRID_ACTIVE_POWER, -4000) //
+						.input("_sum", Sum.ChannelId.ESS_DISCHARGE_POWER, 0) //
+						.input("_sum", Sum.ChannelId.ESS_ACTIVE_POWER, 0) //
+						.input("_sum", Sum.ChannelId.ESS_SOC, 65) //
+						.input("_sum", Sum.ChannelId.ESS_CAPACITY, 10_000) //
+						.input("heatPump0", ElectricityMeter.ChannelId.ACTIVE_POWER, 0) //
+						.output(ControllerShiHeatPump.ChannelId.ELEVATED_MODE_ACTIVE, true) //
+						.output(ControllerShiHeatPump.ChannelId.DECISION_REASON, DecisionReason.BOOST_ACTIVE)) //
+				.next(new TestCase("Surplus gone and the commit window over: the boost drops") //
+						.timeleap(clock, 10, ChronoUnit.SECONDS) //
+						.input("_sum", Sum.ChannelId.GRID_ACTIVE_POWER, 0) //
+						.output(ControllerShiHeatPump.ChannelId.ELEVATED_MODE_ACTIVE, false) //
+						.output(ControllerShiHeatPump.ChannelId.DECISION_REASON, DecisionReason.SURPLUS_TOO_LOW)) //
+				// The sun is back and the entry conditions are fully met - only the restart
+				// lock from the drop above still blocks. That is a different situation from
+				// "no surplus", and only the reason tells them apart.
+				.next(new TestCase("Restart lock blocks a fully confirmed entry") //
+						.timeleap(clock, 1, ChronoUnit.SECONDS) //
+						.input("_sum", Sum.ChannelId.GRID_ACTIVE_POWER, -4000) //
+						.output(ControllerShiHeatPump.ChannelId.ELEVATED_MODE_ACTIVE, false) //
+						.output(ControllerShiHeatPump.ChannelId.BOOST_PENDING, false) //
+						.output(ControllerShiHeatPump.ChannelId.DECISION_REASON,
+								DecisionReason.SWITCHING_HYSTERESIS)) //
+				.deactivate();
+	}
+
+	@Test
+	void testDecisionReasonReportsTheForecastVetoAndMissingMeasurements() throws Exception {
+		var clock = createDummyClock();
+		var cm = new DummyComponentManager(clock);
+		var sum = new DummySum();
+		var prod = new Integer[96];
+		var cons = new Integer[96];
+		Arrays.fill(prod, 0); // forecast shows no production at all ...
+		Arrays.fill(cons, 0);
+		new ControllerTest(new ControllerShiHeatPumpImpl()) //
+				.addReference("cm", new DummyConfigurationAdmin()) //
+				.addReference("componentManager", cm) //
+				.addReference("sum", sum) //
+				.addReference("predictorManager",
+						consumptionSplitPredictor(cm, sum, Instant.now(clock), prod, cons, cons)) //
+				.addReference("heatPump", new DummyHeatShiHeatPump("heatPump0")) //
+				.addComponent(new DummyManagedSymmetricEss("ess0") //
+						.setPower(new DummyPower(10_000))) //
+				.activate(MyConfig.create() //
+						.setId("ctrl0") //
+						.setHeatPumpId("heatPump0") //
+						.setEssId("ess0") //
+						.setHeatPumpPosition(HeatPumpPosition.GRID_SIDE_OF_GRID_METER) //
+						.setForecastVetoEnabled(true) //
+						.build()) //
+				// ... while the meter reports a real 4 kW surplus. The veto blocks entry, and
+				// that is the reason the widget has to show - not "no surplus".
+				.next(new TestCase("Real surplus, but the forecast vetoes the entry") //
+						.input("_sum", Sum.ChannelId.GRID_ACTIVE_POWER, -4000) //
+						.input("_sum", Sum.ChannelId.ESS_DISCHARGE_POWER, 0) //
+						.input("_sum", Sum.ChannelId.ESS_ACTIVE_POWER, 0) //
+						.input("_sum", Sum.ChannelId.ESS_SOC, 65) //
+						.input("_sum", Sum.ChannelId.ESS_CAPACITY, 10_000) //
+						.input("heatPump0", ElectricityMeter.ChannelId.ACTIVE_POWER, 0) //
+						.output(ControllerShiHeatPump.ChannelId.ELEVATED_MODE_ACTIVE, false) //
+						.output(ControllerShiHeatPump.ChannelId.BOOST_FORECAST_VETO, true) //
+						.output(ControllerShiHeatPump.ChannelId.DECISION_REASON, DecisionReason.FORECAST_VETO)) //
+				// A missing grid reading takes the fail-safe path, which releases the heat
+				// pump. Without a reason that is indistinguishable from a quiet night.
+				.next(new TestCase("Grid measurement gone: fail-safe") //
+						.input("_sum", Sum.ChannelId.GRID_ACTIVE_POWER, null) //
+						.output(ControllerShiHeatPump.ChannelId.POWER_MEASUREMENT_UNAVAILABLE, true) //
+						.output(ControllerShiHeatPump.ChannelId.DECISION_REASON,
+								DecisionReason.MEASUREMENT_UNAVAILABLE)) //
+				.deactivate();
+	}
+
+	@Test
 	void testPredictionsFromUnmanagedChannels() throws Exception {
 		var clock = createDummyClock();
 		var cm = new DummyComponentManager(clock);

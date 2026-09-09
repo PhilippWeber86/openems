@@ -57,9 +57,6 @@ public class ControllerShiHeatPumpImpl extends AbstractOpenemsComponent
 	private static final ChannelAddress SUM_UNMANAGED_CONSUMPTION_ACTIVE_POWER = new ChannelAddress("_sum",
 			Sum.ChannelId.UNMANAGED_CONSUMPTION_ACTIVE_POWER.id());
 
-	/** Upper bound of SHI register HR10041 (300 x 0.1 kW). */
-	private static final int MAX_PC_LIMIT = 30_000; // [W]
-
 	/**
 	 * Power margin the coverage must exceed to START a run extension. Together with
 	 * the re-entry lock this forms an on-margin / re-entry-lock pair that keeps the
@@ -293,6 +290,7 @@ public class ControllerShiHeatPumpImpl extends AbstractOpenemsComponent
 		if (gridPowerValue.isEmpty() || essPowerValue.isEmpty() || heatPumpPowerValue.isEmpty()) {
 			this._setPowerMeasurementUnavailable(true);
 			this.releaseHeatPump();
+			this._setDecisionReason(DecisionReason.MEASUREMENT_UNAVAILABLE);
 			this._setBoostPending(false);
 			this._setBoostForecastVeto(false);
 			this._setEssForcedExportPower(null);
@@ -421,24 +419,32 @@ public class ControllerShiHeatPumpImpl extends AbstractOpenemsComponent
 			this.uncoveredMillis = 0L;
 		}
 
+		// One unambiguous state for this cycle. A boost absorbs a running extension,
+		// so the two can never overlap.
+		final OperatingState state;
 		if (this.elevatedModeActive) {
-			// A running extension is absorbed by the elevated mode
 			this.runExtensionActive = false;
-			// Never push the soft power limit below the minimum power while elevated:
-			// during the switching hysteresis a short surplus dip would otherwise
-			// shut down the compressor via a 0 W limit - the SHI documentation
-			// explicitly recommends a switch-off delay for PV-surplus operation
-			this.applyElevatedMode(Math.max(minimumPower, balance.surplusPower() + invitedSupportPower));
+			state = OperatingState.BOOST;
 		} else {
-			this.handleRunExtension(balance.surplusPower(), invitedSupportPower, balance.heatPumpPower());
-			// The soft limit of a self-started run follows the PASSIVE support
-			// (maxSupportPower), which pays for such a run in BOTH battery-support
-			// modes - unlike the invited support, which only drives the boost and the
-			// run extension and is 0 in CLOUD_BUFFER.
-			this.applyNormalMode(balance.surplusPower() + balance.maxSupportPower(), minimumPower);
+			state = this.decideRunExtension(balance.surplusPower(), invitedSupportPower, balance.heatPumpPower())
+					? OperatingState.RUN_EXTENSION
+					: OperatingState.NORMAL;
 		}
+		this.applyCommand(this.commandFor(state, balance, invitedSupportPower, minimumPower));
 		var appliedSupport = this.applyEssSupport(balance);
 
+		this._setDecisionReason(switch (state) {
+		case BOOST -> DecisionReason.BOOST_ACTIVE;
+		case RUN_EXTENSION -> DecisionReason.RUN_EXTENSION_ACTIVE;
+		// In NORMAL the interesting question is what held the boost back. Reported in
+		// binding order: a missing surplus outranks a veto, which outranks the
+		// confirmation - and if all entry conditions hold, only the compressor cycle
+		// hysteresis can still be in the way.
+		case NORMAL -> !sunSufficient ? DecisionReason.SURPLUS_TOO_LOW //
+				: forecastVetoed ? DecisionReason.FORECAST_VETO //
+						: !boostConfirmed ? DecisionReason.BOOST_CONFIRMATION_PENDING //
+								: DecisionReason.SWITCHING_HYSTERESIS;
+		});
 		this._setElevatedModeActive(this.elevatedModeActive);
 		// The free battery energy is the energy released to the heat pump: it is the
 		// spare energy above the night reserve, but 0 when battery support is
@@ -495,62 +501,68 @@ public class ControllerShiHeatPumpImpl extends AbstractOpenemsComponent
 				.isAfter(Instant.now(this.componentManager.getClock()));
 	}
 
-	private void applyElevatedMode(int availablePower) throws OpenemsNamedException {
-		// The SHI rejects heating/hot-water commands while the corresponding
-		// operating mode is disabled at the heat pump (status 0 = "Off", e.g.
-		// heating in summer)
-		if (this.heatPump.getHeatingStatus().orElse(0) > 0) {
-			this.heatPump.setHeatingMode(HeatShiHeatPump.MODE_SETPOINT);
-			this.heatPump.setHeatingSetpoint(this.heatingSetpointDeciDegree);
+	/**
+	 * Builds the complete command set for the decided {@link OperatingState}. All
+	 * register values for this cycle come from here, so nothing depends on the order
+	 * in which anything is called afterwards.
+	 *
+	 * @param state               the decided {@link OperatingState}
+	 * @param balance             the {@link PowerBalance} of this cycle
+	 * @param invitedSupportPower battery power the heat pump may be DRIVEN with in W
+	 * @param minimumPower        the minimum sensible heat-pump power in W
+	 * @return the {@link HeatPumpCommand}
+	 */
+	private HeatPumpCommand commandFor(OperatingState state, PowerBalance balance, int invitedSupportPower,
+			int minimumPower) {
+		var heatingStatus = this.heatPump.getHeatingStatus().orElse(0);
+		var hotWaterStatus = this.heatPump.getHotWaterStatus().orElse(0);
+		return switch (state) {
+		// Never push the soft power limit below the minimum power while elevated:
+		// during the switching hysteresis a short surplus dip would otherwise shut
+		// down the compressor via a 0 W limit - the SHI documentation explicitly
+		// recommends a switch-off delay for PV-surplus operation.
+		case BOOST -> HeatPumpCommand.boost(heatingStatus, hotWaterStatus, this.heatingSetpointDeciDegree,
+				this.hotWaterSetpointDeciDegree,
+				Math.max(minimumPower, balance.surplusPower() + invitedSupportPower));
+		case RUN_EXTENSION -> HeatPumpCommand.runExtension(heatingStatus, this.hotWaterSetpointDeciDegree,
+				balance.surplusPower() + invitedSupportPower);
+		case NORMAL -> {
+			// The soft limit of a self-started run follows the PASSIVE support
+			// (maxSupportPower), which pays for such a run in BOTH battery-support modes -
+			// unlike the invited support, which only drives the boost and the run
+			// extension and is 0 in CLOUD_BUFFER.
+			var coveredPower = balance.surplusPower() + balance.maxSupportPower();
+			var naturalRunActive = heatingStatus == HeatShiHeatPump.STATUS_ACTIVE
+					|| hotWaterStatus == HeatShiHeatPump.STATUS_ACTIVE;
+			yield HeatPumpCommand.normal(heatingStatus, hotWaterStatus,
+					naturalRunActive && coveredPower >= minimumPower, coveredPower);
 		}
-		if (this.heatPump.getHotWaterStatus().orElse(0) > 0) {
-			this.heatPump.setHotWaterMode(HeatShiHeatPump.MODE_SETPOINT);
-			this.heatPump.setHotWaterSetpoint(this.hotWaterSetpointDeciDegree);
-		}
-		this.heatPump.setLpcMode(HeatShiHeatPump.LPC_MODE_SOFT);
-		this.heatPump.setPcLimit(Math.max(0, Math.min(MAX_PC_LIMIT, availablePower)));
+		};
 	}
 
 	/**
-	 * Normal mode: the setpoints are released - a run the heat pump started on its
-	 * own (heating in particular) must not be elevated, that would overheat the
-	 * house. The soft power limit is still written while such a run is active, so
-	 * the heat pump can modulate down onto the power PV and the battery actually
-	 * pay for (see the passive support layer), instead of taking the difference
-	 * from the grid. The soft limit is a recommendation: the heat pump discards it
-	 * once its temperature deviates too far from its setpoint, so a genuine heat
-	 * demand is protected by the device itself. The case that must be avoided is
-	 * the opposite one - close to the setpoint the heat pump does obey, and a limit
-	 * below its minimum sensible power would push it into a compressor stop or
-	 * short cycling. The limit is therefore written exclusively while the coverage
-	 * carries at least the minimum power, and released entirely below that, where
-	 * a "use almost nothing" recommendation would be dishonest anyway.
+	 * The single writer to the heat pump. A null mode or setpoint leaves that
+	 * register untouched, which is how the states that must not touch a register -
+	 * or must not write one the device has switched off - express themselves.
 	 *
-	 * @param coveredPower the power covered by PV surplus plus deliverable battery
-	 *                     support in W
-	 * @param minimumPower the minimum sensible heat-pump power in W
+	 * @param command the {@link HeatPumpCommand} to transfer
 	 * @throws OpenemsNamedException on write error
 	 */
-	private void applyNormalMode(int coveredPower, int minimumPower) throws OpenemsNamedException {
-		if (this.heatPump.getHeatingStatus().orElse(0) > 0) {
-			this.heatPump.setHeatingMode(HeatShiHeatPump.MODE_NONE);
+	private void applyCommand(HeatPumpCommand command) throws OpenemsNamedException {
+		if (command.heatingMode() != null) {
+			this.heatPump.setHeatingMode(command.heatingMode());
 		}
-		// The hot-water and LPC registers belong to the run extension while it is
-		// active
-		if (!this.runExtensionActive) {
-			if (this.heatPump.getHotWaterStatus().orElse(0) > 0) {
-				this.heatPump.setHotWaterMode(HeatShiHeatPump.MODE_NONE);
-			}
-			var naturalRunActive = this.heatPump.getHeatingStatus().orElse(0) == HeatShiHeatPump.STATUS_ACTIVE
-					|| this.heatPump.getHotWaterStatus().orElse(0) == HeatShiHeatPump.STATUS_ACTIVE;
-			if (naturalRunActive && coveredPower >= minimumPower) {
-				this.heatPump.setLpcMode(HeatShiHeatPump.LPC_MODE_SOFT);
-				this.heatPump.setPcLimit(Math.min(MAX_PC_LIMIT, coveredPower));
-			} else {
-				this.heatPump.setLpcMode(HeatShiHeatPump.LPC_MODE_NONE);
-				this.heatPump.setPcLimit(0);
-			}
+		if (command.heatingSetpoint() != null) {
+			this.heatPump.setHeatingSetpoint(command.heatingSetpoint());
 		}
+		if (command.hotWaterMode() != null) {
+			this.heatPump.setHotWaterMode(command.hotWaterMode());
+		}
+		if (command.hotWaterSetpoint() != null) {
+			this.heatPump.setHotWaterSetpoint(command.hotWaterSetpoint());
+		}
+		this.heatPump.setLpcMode(command.lpcMode());
+		this.heatPump.setPcLimit(command.pcLimit());
 	}
 
 	/**
@@ -672,18 +684,25 @@ public class ControllerShiHeatPumpImpl extends AbstractOpenemsComponent
 	 * a margin) plus a re-entry lock (after release, re-entry is blocked for the
 	 * minimum switching time) - not by holding the setpoint elevation.
 	 *
+	 * <p>
+	 * Decides only - the registers are written from the command set derived for the
+	 * resulting {@link OperatingState}. The switch-off rule here is deliberately
+	 * NOT the one the boost uses: the boost holds through a decaying uncovered-time
+	 * budget because dropping it aborts a committed compressor cycle, while the
+	 * extension releases the instant coverage is lost because it holds no cycle and
+	 * the only thing at stake is not drawing grid power.
+	 *
 	 * @param surplusPower        current natural PV surplus in W
 	 * @param invitedSupportPower battery power the heat pump may be driven with in W
 	 *                            (0 in CLOUD_BUFFER mode, so the extension then only
 	 *                            runs when the sun alone covers it)
 	 * @param heatPumpPower       current heat pump consumption in W
-	 * @throws OpenemsNamedException on error
+	 * @return whether a run extension is active for this cycle
 	 */
-	private void handleRunExtension(int surplusPower, int invitedSupportPower, int heatPumpPower)
-			throws OpenemsNamedException {
+	private boolean decideRunExtension(int surplusPower, int invitedSupportPower, int heatPumpPower) {
 		if (!this.config.runExtensionEnabled()) {
 			this.runExtensionActive = false;
-			return;
+			return false;
 		}
 		var now = Instant.now(this.componentManager.getClock());
 		var coverage = surplusPower + invitedSupportPower;
@@ -698,27 +717,23 @@ public class ControllerShiHeatPumpImpl extends AbstractOpenemsComponent
 
 		if (this.runExtensionActive) {
 			// Release the moment coverage is lost (or the natural run ends) - do not
-			// keep the elevated setpoint hoping the soft limit prevents grid draw.
+			// keep the elevated setpoint hoping the soft limit prevents grid draw. The
+			// NORMAL command set then releases the hot-water registers.
 			if (!naturalRunActive || !covered) {
 				this.runExtensionActive = false;
 				this.runExtensionEndedAt = now;
-				return; // applyNormalMode releases the hot-water registers
+				return false;
 			}
 		} else {
 			var reentryLocked = this.runExtensionEndedAt.plusSeconds(this.config.minimumSwitchingTime()).isAfter(now);
 			if (!naturalRunActive || !coveredWithMargin || reentryLocked || this.naturalHotWaterSetpoint == null
 					|| this.hotWaterSetpointDeciDegree
 							- this.naturalHotWaterSetpoint < this.extensionMinDeltaDeciKelvin) {
-				return;
+				return false;
 			}
 			this.runExtensionActive = true;
 		}
-		this.heatPump.setHotWaterMode(HeatShiHeatPump.MODE_SETPOINT);
-		this.heatPump.setHotWaterSetpoint(this.hotWaterSetpointDeciDegree);
-		// Soft-limit the heat pump to the covered power as a recommendation; the hard
-		// guarantee against grid draw is the immediate release above, not this limit.
-		this.heatPump.setLpcMode(HeatShiHeatPump.LPC_MODE_SOFT);
-		this.heatPump.setPcLimit(Math.max(0, Math.min(MAX_PC_LIMIT, coverage)));
+		return true;
 	}
 
 	/**

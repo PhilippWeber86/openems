@@ -4,6 +4,7 @@ import io.openems.common.channel.Level;
 import io.openems.common.channel.Unit;
 import io.openems.common.types.OpenemsType;
 import io.openems.edge.common.channel.BooleanReadChannel;
+import io.openems.edge.common.channel.Channel;
 import io.openems.edge.common.channel.Doc;
 import io.openems.edge.common.channel.IntegerReadChannel;
 import io.openems.edge.common.channel.StateChannel;
@@ -15,6 +16,10 @@ public interface ControllerShiHeatPump extends OpenemsComponent {
 	public enum ChannelId implements io.openems.edge.common.channel.ChannelId {
 		ELEVATED_MODE_ACTIVE(Doc.of(OpenemsType.BOOLEAN) //
 				.text("Heat pump runs with elevated setpoints on PV surplus")), //
+		DECISION_REASON(Doc.of(DecisionReason.values()) //
+				.text("Binding reason for the current operating state - in particular why a boost "
+						+ "is not running (surplus too low, confirmation pending, forecast veto, "
+						+ "switching hysteresis, measurement unavailable)")), //
 		BOOST_PENDING(Doc.of(OpenemsType.BOOLEAN) //
 				.text("Elevated-mode entry conditions are fulfilled, waiting for the confirmation time")), //
 		BOOST_FORECAST_VETO(Doc.of(OpenemsType.BOOLEAN) //
@@ -155,6 +160,24 @@ public interface ControllerShiHeatPump extends OpenemsComponent {
 	 */
 	public default void _setElevatedModeActive(boolean value) {
 		this.getElevatedModeActiveChannel().setNextValue(value);
+	}
+
+	public default Channel<DecisionReason> getDecisionReasonChannel() {
+		return this.channel(ChannelId.DECISION_REASON);
+	}
+
+	public default Value<DecisionReason> getDecisionReason() {
+		return this.getDecisionReasonChannel().value();
+	}
+
+	/**
+	 * Internal method to set the 'nextValue' on {@link ChannelId#DECISION_REASON}
+	 * Channel.
+	 *
+	 * @param value the next value
+	 */
+	public default void _setDecisionReason(DecisionReason value) {
+		this.getDecisionReasonChannel().setNextValue(value);
 	}
 
 	public default IntegerReadChannel getFreeBatteryEnergyChannel() {
