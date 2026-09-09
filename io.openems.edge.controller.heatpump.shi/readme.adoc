@@ -50,6 +50,19 @@ Three regressions came out of getting this wrong, and they are recorded here rat
 
 Tests follow this split: `PowerBalanceTest` states the invariants as properties (same load → same figure regardless of its split; extra PV never appears as battery discharge; less ESS power never yields more support; no released energy → no support), while `ControllerShiHeatPumpImplTest` pins the operating scenarios.
 
+== The night reserve calculation
+
+The reserve policy lives in `BatteryReserveCalculator`, separate from the Controller: the Controller fetches the forecasts and is the only place that writes channels, while the calculator takes the time-aligned forecasts plus the battery state and returns the reserve, the spare energy and the *reason* the calculation ended where it did (`OK`, `NO_USABLE_ENERGY`, `FORECAST_UNAVAILABLE`, `FORECAST_INCOMPLETE`). It touches no OSGi service, no channel and no clock, so the policy is unit-testable with plain maps and reusable for a future heating-buffer planner.
+
+The reason distinguishes cases the old code conflated: a battery that simply has nothing to give is *not* a forecast problem and must not raise `NoPredictionAvailable` — which is why that guard is settled before the predictor is consulted at all.
+
+Two different gap rules coexist on purpose, and they protect opposite things:
+
+* The **reserve** is strict. A quarter missing in both consumption channels, or a forecast that does not reach the full 24 h horizon, releases nothing. Releasing battery energy on an incomplete forecast can leave the household short overnight.
+* The optional **boost forecast veto** is lenient. It skips missing quarters and only fires on a quarter that is actually forecast too weak, because a veto firing on a gap would block a boost the sun could well have carried.
+
+`BatteryReserveCalculatorTest` exercises this policy directly with plain forecast maps — reason mapping, the per-quarter channel fallback, the horizon check and both reserve modes — without any component harness.
+
 == Components
 
 === Controller SHI Heat Pump
