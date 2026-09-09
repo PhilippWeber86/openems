@@ -160,6 +160,7 @@ class ControllerShiHeatPumpImplTest {
 				.next(new TestCase("Grid export above minimum: elevated") //
 						.input("_sum", Sum.ChannelId.GRID_ACTIVE_POWER, -4000) //
 						.input("_sum", Sum.ChannelId.ESS_DISCHARGE_POWER, 0) //
+						.input("_sum", Sum.ChannelId.ESS_ACTIVE_POWER, 0) //
 						.input("_sum", Sum.ChannelId.ESS_SOC, 65) //
 						.input("_sum", Sum.ChannelId.ESS_CAPACITY, 10_000) //
 						.input("heatPump0", ElectricityMeter.ChannelId.ACTIVE_POWER, 500) //
@@ -172,6 +173,7 @@ class ControllerShiHeatPumpImplTest {
 				.next(new TestCase("Export gone: hysteresis keeps elevated mode") //
 						.input("_sum", Sum.ChannelId.GRID_ACTIVE_POWER, 0) //
 						.input("_sum", Sum.ChannelId.ESS_DISCHARGE_POWER, 1000) //
+						.input("_sum", Sum.ChannelId.ESS_ACTIVE_POWER, 1000) //
 						.input("_sum", Sum.ChannelId.ESS_SOC, 65) //
 						.input("_sum", Sum.ChannelId.ESS_CAPACITY, 10_000) //
 						.input("heatPump0", ElectricityMeter.ChannelId.ACTIVE_POWER, 500) //
@@ -180,6 +182,7 @@ class ControllerShiHeatPumpImplTest {
 						.timeleap(clock, 6, ChronoUnit.MINUTES) //
 						.input("_sum", Sum.ChannelId.GRID_ACTIVE_POWER, 0) //
 						.input("_sum", Sum.ChannelId.ESS_DISCHARGE_POWER, 1000) //
+						.input("_sum", Sum.ChannelId.ESS_ACTIVE_POWER, 1000) //
 						.input("_sum", Sum.ChannelId.ESS_SOC, 65) //
 						.input("_sum", Sum.ChannelId.ESS_CAPACITY, 10_000) //
 						.input("heatPump0", ElectricityMeter.ChannelId.ACTIVE_POWER, 500) //
@@ -215,6 +218,7 @@ class ControllerShiHeatPumpImplTest {
 				.next(new TestCase("Enter elevated on strong sun") //
 						.input("_sum", Sum.ChannelId.GRID_ACTIVE_POWER, -4000) //
 						.input("_sum", Sum.ChannelId.ESS_DISCHARGE_POWER, 0) //
+						.input("_sum", Sum.ChannelId.ESS_ACTIVE_POWER, 0) //
 						.input("_sum", Sum.ChannelId.ESS_SOC, 65) //
 						.input("_sum", Sum.ChannelId.ESS_CAPACITY, 10_000) //
 						.input("heatPump0", ElectricityMeter.ChannelId.ACTIVE_POWER, 500) //
@@ -224,6 +228,7 @@ class ControllerShiHeatPumpImplTest {
 						.timeleap(clock, 10, ChronoUnit.SECONDS) //
 						.input("_sum", Sum.ChannelId.GRID_ACTIVE_POWER, 0) //
 						.input("_sum", Sum.ChannelId.ESS_DISCHARGE_POWER, 0) //
+						.input("_sum", Sum.ChannelId.ESS_ACTIVE_POWER, 0) //
 						.input("_sum", Sum.ChannelId.ESS_SOC, 65) //
 						.input("_sum", Sum.ChannelId.ESS_CAPACITY, 10_000) //
 						.input("heatPump0", ElectricityMeter.ChannelId.ACTIVE_POWER, 500) //
@@ -233,6 +238,7 @@ class ControllerShiHeatPumpImplTest {
 						.timeleap(clock, 5, ChronoUnit.SECONDS) //
 						.input("_sum", Sum.ChannelId.GRID_ACTIVE_POWER, -4000) //
 						.input("_sum", Sum.ChannelId.ESS_DISCHARGE_POWER, 0) //
+						.input("_sum", Sum.ChannelId.ESS_ACTIVE_POWER, 0) //
 						.input("_sum", Sum.ChannelId.ESS_SOC, 65) //
 						.input("_sum", Sum.ChannelId.ESS_CAPACITY, 10_000) //
 						.input("heatPump0", ElectricityMeter.ChannelId.ACTIVE_POWER, 500) //
@@ -242,6 +248,7 @@ class ControllerShiHeatPumpImplTest {
 						.timeleap(clock, 10, ChronoUnit.SECONDS) //
 						.input("_sum", Sum.ChannelId.GRID_ACTIVE_POWER, 0) //
 						.input("_sum", Sum.ChannelId.ESS_DISCHARGE_POWER, 0) //
+						.input("_sum", Sum.ChannelId.ESS_ACTIVE_POWER, 0) //
 						.input("_sum", Sum.ChannelId.ESS_SOC, 65) //
 						.input("_sum", Sum.ChannelId.ESS_CAPACITY, 10_000) //
 						.input("heatPump0", ElectricityMeter.ChannelId.ACTIVE_POWER, 500) //
@@ -250,6 +257,7 @@ class ControllerShiHeatPumpImplTest {
 						.timeleap(clock, 10, ChronoUnit.SECONDS) //
 						.input("_sum", Sum.ChannelId.GRID_ACTIVE_POWER, 0) //
 						.input("_sum", Sum.ChannelId.ESS_DISCHARGE_POWER, 0) //
+						.input("_sum", Sum.ChannelId.ESS_ACTIVE_POWER, 0) //
 						.input("_sum", Sum.ChannelId.ESS_SOC, 65) //
 						.input("_sum", Sum.ChannelId.ESS_CAPACITY, 10_000) //
 						.input("heatPump0", ElectricityMeter.ChannelId.ACTIVE_POWER, 500) //
@@ -280,6 +288,7 @@ class ControllerShiHeatPumpImplTest {
 				.next(new TestCase("Enter elevated on strong sun") //
 						.input("_sum", Sum.ChannelId.GRID_ACTIVE_POWER, -4000) //
 						.input("_sum", Sum.ChannelId.ESS_DISCHARGE_POWER, 0) //
+						.input("_sum", Sum.ChannelId.ESS_ACTIVE_POWER, 0) //
 						.input("_sum", Sum.ChannelId.ESS_SOC, 65) //
 						.input("_sum", Sum.ChannelId.ESS_CAPACITY, 10_000) //
 						.input("heatPump0", ElectricityMeter.ChannelId.ACTIVE_POWER, 500) //
@@ -290,6 +299,7 @@ class ControllerShiHeatPumpImplTest {
 						.timeleap(clock, 6, ChronoUnit.MINUTES) //
 						.input("_sum", Sum.ChannelId.GRID_ACTIVE_POWER, 0) //
 						.input("_sum", Sum.ChannelId.ESS_DISCHARGE_POWER, 0) //
+						.input("_sum", Sum.ChannelId.ESS_ACTIVE_POWER, 0) //
 						.input("_sum", Sum.ChannelId.ESS_SOC, 65) //
 						.input("_sum", Sum.ChannelId.ESS_CAPACITY, 10_000) //
 						.input("heatPump0", ElectricityMeter.ChannelId.ACTIVE_POWER, 500) //
@@ -299,6 +309,7 @@ class ControllerShiHeatPumpImplTest {
 				.next(new TestCase("Battery at Min-SoC: no coverage, dropped") //
 						.input("_sum", Sum.ChannelId.GRID_ACTIVE_POWER, 0) //
 						.input("_sum", Sum.ChannelId.ESS_DISCHARGE_POWER, 0) //
+						.input("_sum", Sum.ChannelId.ESS_ACTIVE_POWER, 0) //
 						.input("_sum", Sum.ChannelId.ESS_SOC, 15) //
 						.input("_sum", Sum.ChannelId.ESS_CAPACITY, 10_000) //
 						.input("heatPump0", ElectricityMeter.ChannelId.ACTIVE_POWER, 500) //
@@ -331,6 +342,7 @@ class ControllerShiHeatPumpImplTest {
 				.next(new TestCase("Enter elevated on strong sun") //
 						.input("_sum", Sum.ChannelId.GRID_ACTIVE_POWER, -4000) //
 						.input("_sum", Sum.ChannelId.ESS_DISCHARGE_POWER, 0) //
+						.input("_sum", Sum.ChannelId.ESS_ACTIVE_POWER, 0) //
 						.input("_sum", Sum.ChannelId.ESS_SOC, 65) //
 						.input("_sum", Sum.ChannelId.ESS_CAPACITY, 10_000) //
 						.input("heatPump0", ElectricityMeter.ChannelId.ACTIVE_POWER, 500) //
@@ -340,6 +352,7 @@ class ControllerShiHeatPumpImplTest {
 						.timeleap(clock, 10, ChronoUnit.SECONDS) //
 						.input("_sum", Sum.ChannelId.GRID_ACTIVE_POWER, 0) //
 						.input("_sum", Sum.ChannelId.ESS_DISCHARGE_POWER, 0) //
+						.input("_sum", Sum.ChannelId.ESS_ACTIVE_POWER, 0) //
 						.input("_sum", Sum.ChannelId.ESS_SOC, 65) //
 						.input("_sum", Sum.ChannelId.ESS_CAPACITY, 10_000) //
 						.input("heatPump0", ElectricityMeter.ChannelId.ACTIVE_POWER, 500) //
@@ -348,6 +361,7 @@ class ControllerShiHeatPumpImplTest {
 						.timeleap(clock, 8, ChronoUnit.SECONDS) //
 						.input("_sum", Sum.ChannelId.GRID_ACTIVE_POWER, 0) //
 						.input("_sum", Sum.ChannelId.ESS_DISCHARGE_POWER, 0) //
+						.input("_sum", Sum.ChannelId.ESS_ACTIVE_POWER, 0) //
 						.input("_sum", Sum.ChannelId.ESS_SOC, 65) //
 						.input("_sum", Sum.ChannelId.ESS_CAPACITY, 10_000) //
 						.input("heatPump0", ElectricityMeter.ChannelId.ACTIVE_POWER, 500) //
@@ -358,6 +372,7 @@ class ControllerShiHeatPumpImplTest {
 						.timeleap(clock, 2, ChronoUnit.SECONDS) //
 						.input("_sum", Sum.ChannelId.GRID_ACTIVE_POWER, -4000) //
 						.input("_sum", Sum.ChannelId.ESS_DISCHARGE_POWER, 0) //
+						.input("_sum", Sum.ChannelId.ESS_ACTIVE_POWER, 0) //
 						.input("_sum", Sum.ChannelId.ESS_SOC, 65) //
 						.input("_sum", Sum.ChannelId.ESS_CAPACITY, 10_000) //
 						.input("heatPump0", ElectricityMeter.ChannelId.ACTIVE_POWER, 500) //
@@ -368,6 +383,7 @@ class ControllerShiHeatPumpImplTest {
 						.timeleap(clock, 8, ChronoUnit.SECONDS) //
 						.input("_sum", Sum.ChannelId.GRID_ACTIVE_POWER, 0) //
 						.input("_sum", Sum.ChannelId.ESS_DISCHARGE_POWER, 0) //
+						.input("_sum", Sum.ChannelId.ESS_ACTIVE_POWER, 0) //
 						.input("_sum", Sum.ChannelId.ESS_SOC, 65) //
 						.input("_sum", Sum.ChannelId.ESS_CAPACITY, 10_000) //
 						.input("heatPump0", ElectricityMeter.ChannelId.ACTIVE_POWER, 500) //
@@ -398,6 +414,7 @@ class ControllerShiHeatPumpImplTest {
 				.next(new TestCase("Strong export, no free battery energy: boost on sun alone") //
 						.input("_sum", Sum.ChannelId.GRID_ACTIVE_POWER, -4000) //
 						.input("_sum", Sum.ChannelId.ESS_DISCHARGE_POWER, 0) //
+						.input("_sum", Sum.ChannelId.ESS_ACTIVE_POWER, 0) //
 						.input("heatPump0", ElectricityMeter.ChannelId.ACTIVE_POWER, 0) //
 						.output(ControllerShiHeatPump.ChannelId.ELEVATED_MODE_ACTIVE, true) //
 						.output(ControllerShiHeatPump.ChannelId.FREE_BATTERY_ENERGY, 0) //
@@ -431,6 +448,7 @@ class ControllerShiHeatPumpImplTest {
 				.next(new TestCase("Surplus below minimum, no bridge: stays normal") //
 						.input("_sum", Sum.ChannelId.GRID_ACTIVE_POWER, -1500) //
 						.input("_sum", Sum.ChannelId.ESS_DISCHARGE_POWER, 0) //
+						.input("_sum", Sum.ChannelId.ESS_ACTIVE_POWER, 0) //
 						.input("_sum", Sum.ChannelId.ESS_SOC, 65) //
 						.input("_sum", Sum.ChannelId.ESS_CAPACITY, 10_000) //
 						.input("heatPump0", ElectricityMeter.ChannelId.ACTIVE_POWER, 500) //
@@ -460,6 +478,7 @@ class ControllerShiHeatPumpImplTest {
 				.next(new TestCase("Start: strong sun and free energy -> boost") //
 						.input("_sum", Sum.ChannelId.GRID_ACTIVE_POWER, -4000) //
 						.input("_sum", Sum.ChannelId.ESS_DISCHARGE_POWER, 0) //
+						.input("_sum", Sum.ChannelId.ESS_ACTIVE_POWER, 0) //
 						.input("_sum", Sum.ChannelId.ESS_SOC, 65) //
 						.input("_sum", Sum.ChannelId.ESS_CAPACITY, 10_000) //
 						.input("heatPump0", ElectricityMeter.ChannelId.ACTIVE_POWER, 0) //
@@ -469,6 +488,7 @@ class ControllerShiHeatPumpImplTest {
 				.next(new TestCase("Energy drained but sun holds: boost stays") //
 						.input("_sum", Sum.ChannelId.GRID_ACTIVE_POWER, -4000) //
 						.input("_sum", Sum.ChannelId.ESS_DISCHARGE_POWER, 0) //
+						.input("_sum", Sum.ChannelId.ESS_ACTIVE_POWER, 0) //
 						.input("_sum", Sum.ChannelId.ESS_SOC, 15) //
 						.input("_sum", Sum.ChannelId.ESS_CAPACITY, 10_000) //
 						.input("heatPump0", ElectricityMeter.ChannelId.ACTIVE_POWER, 0) //
@@ -500,6 +520,7 @@ class ControllerShiHeatPumpImplTest {
 				.next(new TestCase("Conditions fulfilled: pending, not yet elevated") //
 						.input("_sum", Sum.ChannelId.GRID_ACTIVE_POWER, -4000) //
 						.input("_sum", Sum.ChannelId.ESS_DISCHARGE_POWER, 0) //
+						.input("_sum", Sum.ChannelId.ESS_ACTIVE_POWER, 0) //
 						.input("_sum", Sum.ChannelId.ESS_SOC, 65) //
 						.input("_sum", Sum.ChannelId.ESS_CAPACITY, 10_000) //
 						.input("heatPump0", ElectricityMeter.ChannelId.ACTIVE_POWER, 500) //
@@ -550,6 +571,7 @@ class ControllerShiHeatPumpImplTest {
 				.next(new TestCase("Conditions fulfilled: confirmation starts at 0") //
 						.input("_sum", Sum.ChannelId.GRID_ACTIVE_POWER, -4000) //
 						.input("_sum", Sum.ChannelId.ESS_DISCHARGE_POWER, 0) //
+						.input("_sum", Sum.ChannelId.ESS_ACTIVE_POWER, 0) //
 						.input("_sum", Sum.ChannelId.ESS_SOC, 65) //
 						.input("_sum", Sum.ChannelId.ESS_CAPACITY, 10_000) //
 						.input("heatPump0", ElectricityMeter.ChannelId.ACTIVE_POWER, 500) //
@@ -558,6 +580,7 @@ class ControllerShiHeatPumpImplTest {
 						.timeleap(clock, 10, ChronoUnit.SECONDS) //
 						.input("_sum", Sum.ChannelId.GRID_ACTIVE_POWER, -4000) //
 						.input("_sum", Sum.ChannelId.ESS_DISCHARGE_POWER, 0) //
+						.input("_sum", Sum.ChannelId.ESS_ACTIVE_POWER, 0) //
 						.input("_sum", Sum.ChannelId.ESS_SOC, 65) //
 						.input("_sum", Sum.ChannelId.ESS_CAPACITY, 10_000) //
 						.input("heatPump0", ElectricityMeter.ChannelId.ACTIVE_POWER, 500) //
@@ -566,6 +589,7 @@ class ControllerShiHeatPumpImplTest {
 						.timeleap(clock, 8, ChronoUnit.SECONDS) //
 						.input("_sum", Sum.ChannelId.GRID_ACTIVE_POWER, -4000) //
 						.input("_sum", Sum.ChannelId.ESS_DISCHARGE_POWER, 0) //
+						.input("_sum", Sum.ChannelId.ESS_ACTIVE_POWER, 0) //
 						.input("_sum", Sum.ChannelId.ESS_SOC, 65) //
 						.input("_sum", Sum.ChannelId.ESS_CAPACITY, 10_000) //
 						.input("heatPump0", ElectricityMeter.ChannelId.ACTIVE_POWER, 500) //
@@ -577,6 +601,7 @@ class ControllerShiHeatPumpImplTest {
 						.timeleap(clock, 10, ChronoUnit.MINUTES) //
 						.input("_sum", Sum.ChannelId.GRID_ACTIVE_POWER, -4000) //
 						.input("_sum", Sum.ChannelId.ESS_DISCHARGE_POWER, 0) //
+						.input("_sum", Sum.ChannelId.ESS_ACTIVE_POWER, 0) //
 						.input("_sum", Sum.ChannelId.ESS_SOC, 65) //
 						.input("_sum", Sum.ChannelId.ESS_CAPACITY, 10_000) //
 						.input("heatPump0", ElectricityMeter.ChannelId.ACTIVE_POWER, 500) //
@@ -587,6 +612,7 @@ class ControllerShiHeatPumpImplTest {
 						.timeleap(clock, 10, ChronoUnit.SECONDS) //
 						.input("_sum", Sum.ChannelId.GRID_ACTIVE_POWER, -4000) //
 						.input("_sum", Sum.ChannelId.ESS_DISCHARGE_POWER, 0) //
+						.input("_sum", Sum.ChannelId.ESS_ACTIVE_POWER, 0) //
 						.input("_sum", Sum.ChannelId.ESS_SOC, 65) //
 						.input("_sum", Sum.ChannelId.ESS_CAPACITY, 10_000) //
 						.input("heatPump0", ElectricityMeter.ChannelId.ACTIVE_POWER, 500) //
@@ -630,6 +656,7 @@ class ControllerShiHeatPumpImplTest {
 				.next(new TestCase("Measured export present, but forecast vetoes entry") //
 						.input("_sum", Sum.ChannelId.GRID_ACTIVE_POWER, -4000) //
 						.input("_sum", Sum.ChannelId.ESS_DISCHARGE_POWER, 0) //
+						.input("_sum", Sum.ChannelId.ESS_ACTIVE_POWER, 0) //
 						.input("_sum", Sum.ChannelId.ESS_SOC, 65) //
 						.input("_sum", Sum.ChannelId.ESS_CAPACITY, 10_000) //
 						.input("heatPump0", ElectricityMeter.ChannelId.ACTIVE_POWER, 500) //
@@ -684,6 +711,7 @@ class ControllerShiHeatPumpImplTest {
 				.next(new TestCase("Gaps in different quarters: no false veto, boost proceeds") //
 						.input("_sum", Sum.ChannelId.GRID_ACTIVE_POWER, -4000) //
 						.input("_sum", Sum.ChannelId.ESS_DISCHARGE_POWER, 0) //
+						.input("_sum", Sum.ChannelId.ESS_ACTIVE_POWER, 0) //
 						.input("_sum", Sum.ChannelId.ESS_SOC, 65) //
 						.input("_sum", Sum.ChannelId.ESS_CAPACITY, 10_000) //
 						.input("heatPump0", ElectricityMeter.ChannelId.ACTIVE_POWER, 500) //
@@ -715,6 +743,7 @@ class ControllerShiHeatPumpImplTest {
 				.next(new TestCase("Forecast confirms surplus: elevated mode starts") //
 						.input("_sum", Sum.ChannelId.GRID_ACTIVE_POWER, -4000) //
 						.input("_sum", Sum.ChannelId.ESS_DISCHARGE_POWER, 0) //
+						.input("_sum", Sum.ChannelId.ESS_ACTIVE_POWER, 0) //
 						.input("_sum", Sum.ChannelId.ESS_SOC, 65) //
 						.input("_sum", Sum.ChannelId.ESS_CAPACITY, 10_000) //
 						.input("heatPump0", ElectricityMeter.ChannelId.ACTIVE_POWER, 500) //
@@ -746,6 +775,7 @@ class ControllerShiHeatPumpImplTest {
 				.next(new TestCase("Export below reported minimum consumption: no elevated mode") //
 						.input("_sum", Sum.ChannelId.GRID_ACTIVE_POWER, -4000) //
 						.input("_sum", Sum.ChannelId.ESS_DISCHARGE_POWER, 0) //
+						.input("_sum", Sum.ChannelId.ESS_ACTIVE_POWER, 0) //
 						.input("_sum", Sum.ChannelId.ESS_SOC, 65) //
 						.input("_sum", Sum.ChannelId.ESS_CAPACITY, 10_000) //
 						.input("heatPump0", ElectricityMeter.ChannelId.ACTIVE_POWER, 0) //
@@ -755,6 +785,7 @@ class ControllerShiHeatPumpImplTest {
 						.timeleap(clock, 6, ChronoUnit.MINUTES) //
 						.input("_sum", Sum.ChannelId.GRID_ACTIVE_POWER, -5000) //
 						.input("_sum", Sum.ChannelId.ESS_DISCHARGE_POWER, 0) //
+						.input("_sum", Sum.ChannelId.ESS_ACTIVE_POWER, 0) //
 						.input("_sum", Sum.ChannelId.ESS_SOC, 65) //
 						.input("_sum", Sum.ChannelId.ESS_CAPACITY, 10_000) //
 						.input("heatPump0", ElectricityMeter.ChannelId.ACTIVE_POWER, 0) //
@@ -787,6 +818,7 @@ class ControllerShiHeatPumpImplTest {
 						.input("heatPump0", HeatShiHeatPump.ChannelId.MIN_STANDSTILL_TIME, 20) //
 						.input("_sum", Sum.ChannelId.GRID_ACTIVE_POWER, -4000) //
 						.input("_sum", Sum.ChannelId.ESS_DISCHARGE_POWER, 0) //
+						.input("_sum", Sum.ChannelId.ESS_ACTIVE_POWER, 0) //
 						.input("_sum", Sum.ChannelId.ESS_SOC, 65) //
 						.input("_sum", Sum.ChannelId.ESS_CAPACITY, 10_000) //
 						.input("heatPump0", ElectricityMeter.ChannelId.ACTIVE_POWER, 500) //
@@ -795,21 +827,25 @@ class ControllerShiHeatPumpImplTest {
 						.timeleap(clock, 6, ChronoUnit.MINUTES) //
 						.input("_sum", Sum.ChannelId.GRID_ACTIVE_POWER, 0) //
 						.input("_sum", Sum.ChannelId.ESS_DISCHARGE_POWER, 0) //
+						.input("_sum", Sum.ChannelId.ESS_ACTIVE_POWER, 0) //
 						.output(ControllerShiHeatPump.ChannelId.ELEVATED_MODE_ACTIVE, true)) //
 				.next(new TestCase("After 21 minutes: back to normal mode") //
 						.timeleap(clock, 15, ChronoUnit.MINUTES) //
 						.input("_sum", Sum.ChannelId.GRID_ACTIVE_POWER, 0) //
 						.input("_sum", Sum.ChannelId.ESS_DISCHARGE_POWER, 0) //
+						.input("_sum", Sum.ChannelId.ESS_ACTIVE_POWER, 0) //
 						.output(ControllerShiHeatPump.ChannelId.ELEVATED_MODE_ACTIVE, false)) //
 				.next(new TestCase("Surplus back after 6 minutes: restart lock blocks re-entry") //
 						.timeleap(clock, 6, ChronoUnit.MINUTES) //
 						.input("_sum", Sum.ChannelId.GRID_ACTIVE_POWER, -4000) //
 						.input("_sum", Sum.ChannelId.ESS_DISCHARGE_POWER, 0) //
+						.input("_sum", Sum.ChannelId.ESS_ACTIVE_POWER, 0) //
 						.output(ControllerShiHeatPump.ChannelId.ELEVATED_MODE_ACTIVE, false)) //
 				.next(new TestCase("Restart lock expired: elevated mode again") //
 						.timeleap(clock, 15, ChronoUnit.MINUTES) //
 						.input("_sum", Sum.ChannelId.GRID_ACTIVE_POWER, -4000) //
 						.input("_sum", Sum.ChannelId.ESS_DISCHARGE_POWER, 0) //
+						.input("_sum", Sum.ChannelId.ESS_ACTIVE_POWER, 0) //
 						.output(ControllerShiHeatPump.ChannelId.ELEVATED_MODE_ACTIVE, true)) //
 				.deactivate();
 	}
@@ -837,6 +873,7 @@ class ControllerShiHeatPumpImplTest {
 				.next(new TestCase("Heating disabled: only hot water is influenced") //
 						.input("_sum", Sum.ChannelId.GRID_ACTIVE_POWER, -4000) //
 						.input("_sum", Sum.ChannelId.ESS_DISCHARGE_POWER, 0) //
+						.input("_sum", Sum.ChannelId.ESS_ACTIVE_POWER, 0) //
 						.input("_sum", Sum.ChannelId.ESS_SOC, 65) //
 						.input("_sum", Sum.ChannelId.ESS_CAPACITY, 10_000) //
 						.input("heatPump0", ElectricityMeter.ChannelId.ACTIVE_POWER, 0) //
@@ -917,6 +954,7 @@ class ControllerShiHeatPumpImplTest {
 				.next(new TestCase("Reserve claims all usable energy: boost on sun, no support") //
 						.input("_sum", Sum.ChannelId.GRID_ACTIVE_POWER, -4000) //
 						.input("_sum", Sum.ChannelId.ESS_DISCHARGE_POWER, 0) //
+						.input("_sum", Sum.ChannelId.ESS_ACTIVE_POWER, 0) //
 						.input("_sum", Sum.ChannelId.ESS_SOC, 40) //
 						.input("_sum", Sum.ChannelId.ESS_CAPACITY, 10_000) //
 						.input("heatPump0", ElectricityMeter.ChannelId.ACTIVE_POWER, 2000) //
@@ -1762,6 +1800,7 @@ class ControllerShiHeatPumpImplTest {
 				.next(new TestCase("No prediction: heat pump stays on grid tariff, warning set") //
 						.input("_sum", Sum.ChannelId.GRID_ACTIVE_POWER, 1000) //
 						.input("_sum", Sum.ChannelId.ESS_DISCHARGE_POWER, 0) //
+						.input("_sum", Sum.ChannelId.ESS_ACTIVE_POWER, 0) //
 						.input("_sum", Sum.ChannelId.ESS_SOC, 50) //
 						.input("_sum", Sum.ChannelId.ESS_CAPACITY, 10_000) //
 						.input("heatPump0", ElectricityMeter.ChannelId.ACTIVE_POWER, 2000) //
@@ -1929,6 +1968,7 @@ class ControllerShiHeatPumpImplTest {
 				.next(new TestCase("Disabled support: boost on surplus, no forced export") //
 						.input("_sum", Sum.ChannelId.GRID_ACTIVE_POWER, -4000) //
 						.input("_sum", Sum.ChannelId.ESS_DISCHARGE_POWER, 0) //
+						.input("_sum", Sum.ChannelId.ESS_ACTIVE_POWER, 0) //
 						.input("_sum", Sum.ChannelId.ESS_SOC, 65) //
 						.input("_sum", Sum.ChannelId.ESS_CAPACITY, 10_000) //
 						.input("heatPump0", ElectricityMeter.ChannelId.ACTIVE_POWER, 2000) //
@@ -1959,6 +1999,7 @@ class ControllerShiHeatPumpImplTest {
 				.next(new TestCase("Strong export: elevated") //
 						.input("_sum", Sum.ChannelId.GRID_ACTIVE_POWER, -4000) //
 						.input("_sum", Sum.ChannelId.ESS_DISCHARGE_POWER, 0) //
+						.input("_sum", Sum.ChannelId.ESS_ACTIVE_POWER, 0) //
 						.input("heatPump0", ElectricityMeter.ChannelId.ACTIVE_POWER, 0) //
 						.output("heatPump0", HeatShiHeatPump.ChannelId.HEATING_MODE, HeatShiHeatPump.MODE_SETPOINT) //
 						.output(ControllerShiHeatPump.ChannelId.ELEVATED_MODE_ACTIVE, true));
@@ -2006,6 +2047,7 @@ class ControllerShiHeatPumpImplTest {
 				.next(new TestCase("Strong export: elevated") //
 						.input("_sum", Sum.ChannelId.GRID_ACTIVE_POWER, -4000) //
 						.input("_sum", Sum.ChannelId.ESS_DISCHARGE_POWER, 0) //
+						.input("_sum", Sum.ChannelId.ESS_ACTIVE_POWER, 0) //
 						.input("heatPump0", ElectricityMeter.ChannelId.ACTIVE_POWER, 0) //
 						.output("heatPump0", HeatShiHeatPump.ChannelId.HEATING_MODE, HeatShiHeatPump.MODE_SETPOINT) //
 						.output(ControllerShiHeatPump.ChannelId.ELEVATED_MODE_ACTIVE, true));
@@ -2053,6 +2095,69 @@ class ControllerShiHeatPumpImplTest {
 						.output(ControllerShiHeatPump.ChannelId.ELEVATED_MODE_ACTIVE, false) //
 						.output(ControllerShiHeatPump.ChannelId.POWER_MEASUREMENT_UNAVAILABLE, true) //
 						.output(ControllerShiHeatPump.ChannelId.ESS_SUPPORT_POWER, 0)) //
+				.deactivate();
+	}
+
+	@Test
+	void testMissingEssActivePowerTakesTheFailSafePath() throws Exception {
+		var clock = createDummyClock();
+		var cm = new DummyComponentManager(clock);
+		var sum = new DummySum();
+		new ControllerTest(new ControllerShiHeatPumpImpl()) //
+				.addReference("cm", new DummyConfigurationAdmin()) //
+				.addReference("componentManager", cm) //
+				.addReference("sum", sum) //
+				.addReference("predictorManager", sunnyPredictor(cm, sum, Instant.now(clock))) //
+				.addReference("heatPump", new DummyHeatShiHeatPump("heatPump0") //
+						.withMeterType(MeterType.CONSUMPTION_METERED)) //
+				.addComponent(new DummyManagedSymmetricEss("ess0") //
+						.setPower(new DummyPower(10_000))) //
+				.activate(MyConfig.create() //
+						.setId("ctrl0") //
+						.setHeatPumpId("heatPump0") //
+						.setEssId("ess0") //
+						.setHeatPumpPosition(HeatPumpPosition.BEHIND_GRID_METER) //
+						// High enough that the surplus starts no boost - this test is about the
+						// measurement guard, not about the elevated mode.
+						.setMinimumSurplusPowerForElevatedMode(5000) //
+						.build()) //
+				// Valid HybridEss operation: 6 kW through the inverter of which 2 kW come
+				// from the battery, so 4 kW are the DC-PV share. Household 1 kW, heat pump
+				// 2 kW, 3 kW exported. The discharge allowance is the PV share plus the
+				// 2 kW support, and the support is really flowing.
+				.next(new TestCase("Hybrid ESS with PV: limit and support are established") //
+						.input("_sum", Sum.ChannelId.GRID_ACTIVE_POWER, -3000) //
+						.input("_sum", Sum.ChannelId.ESS_DISCHARGE_POWER, 2000) //
+						.input("_sum", Sum.ChannelId.ESS_ACTIVE_POWER, 6000) //
+						.input("_sum", Sum.ChannelId.ESS_SOC, 65) //
+						.input("_sum", Sum.ChannelId.ESS_CAPACITY, 10_000) //
+						.input("heatPump0", ElectricityMeter.ChannelId.ACTIVE_POWER, 2000) //
+						.output(ControllerShiHeatPump.ChannelId.POWER_MEASUREMENT_UNAVAILABLE, false) //
+						.output("ess0", ManagedSymmetricEss.ChannelId.SET_ACTIVE_POWER_LESS_OR_EQUALS, 6000) //
+						.output(ControllerShiHeatPump.ChannelId.ESS_DISCHARGE_LIMIT, 6000) //
+						.output(ControllerShiHeatPump.ChannelId.ESS_SUPPORT_POWER, 2000)) //
+				// Only EssActivePower drops out. Substituting 0 W would make the PV share
+				// vanish - with the battery discharging 2 kW the difference even goes
+				// negative and is clamped to 0 - so the system would look AC-coupled and the
+				// allowance, which is an AC bound, would collapse from 6 kW to 2 kW and
+				// throttle exactly the PV the heat pump is running on.
+				//
+				// The balance is not reliably computable without it, so the existing
+				// fail-safe path applies: warning raised, heat pump released, no new ESS
+				// constraint, and no support reported any more.
+				.next(new TestCase("EssActivePower gone: fail-safe, no new ESS constraint") //
+						.input("_sum", Sum.ChannelId.ESS_ACTIVE_POWER, null) //
+						.output(ControllerShiHeatPump.ChannelId.POWER_MEASUREMENT_UNAVAILABLE, true) //
+						.output("heatPump0", HeatShiHeatPump.ChannelId.HEATING_MODE, 0) //
+						.output("heatPump0", HeatShiHeatPump.ChannelId.HOT_WATER_MODE, 0) //
+						.output("heatPump0", HeatShiHeatPump.ChannelId.LPC_MODE, 0) //
+						.output("heatPump0", HeatShiHeatPump.ChannelId.PC_LIMIT, 0) //
+						.output("ess0", ManagedSymmetricEss.ChannelId.SET_ACTIVE_POWER_LESS_OR_EQUALS, null) //
+						.output(ControllerShiHeatPump.ChannelId.ESS_DISCHARGE_LIMIT, null) //
+						.output(ControllerShiHeatPump.ChannelId.ESS_SUPPORT_POWER, 0) //
+						.output(ControllerShiHeatPump.ChannelId.ELEVATED_MODE_ACTIVE, false) //
+						.output(ControllerShiHeatPump.ChannelId.DECISION_REASON,
+								DecisionReason.MEASUREMENT_UNAVAILABLE)) //
 				.deactivate();
 	}
 

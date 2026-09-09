@@ -284,10 +284,18 @@ public class ControllerShiHeatPumpImpl extends AbstractOpenemsComponent
 		// read as 0 W would fake a surplus). Do not start or hold elevated mode and
 		// do not grant battery support; release the heat pump and leave the ESS to
 		// the Balancing Controller.
+		//
+		// EssActivePower belongs into this check even though only a HybridEss needs
+		// it: substituting 0 W there makes the PV share vanish - with an idle battery
+		// it reads as 0, and with a discharging one the difference even goes negative
+		// and is clamped to 0 - so the system looks AC-coupled and the discharge limit,
+		// which is an AC bound, would throttle the PV the heat pump is running on.
 		var gridPowerValue = this.sum.getGridActivePower().asOptional();
 		var essPowerValue = this.sum.getEssDischargePower().asOptional();
+		var essActivePowerValue = this.sum.getEssActivePower().asOptional();
 		var heatPumpPowerValue = this.heatPump.getActivePower().asOptional();
-		if (gridPowerValue.isEmpty() || essPowerValue.isEmpty() || heatPumpPowerValue.isEmpty()) {
+		if (gridPowerValue.isEmpty() || essPowerValue.isEmpty() || essActivePowerValue.isEmpty()
+				|| heatPumpPowerValue.isEmpty()) {
 			this._setPowerMeasurementUnavailable(true);
 			this.releaseHeatPump();
 			this._setDecisionReason(DecisionReason.MEASUREMENT_UNAVAILABLE);
@@ -309,7 +317,7 @@ public class ControllerShiHeatPumpImpl extends AbstractOpenemsComponent
 		// site is what produced the past inconsistencies between the coverage checks
 		// and the constraints actually written to the ESS.
 		final var measured = PowerBalance.of(this.config.heatPumpPosition(), gridPowerValue.get(),
-				this.sum.getEssActivePower().orElse(0), essPowerValue.get(), heatPumpPowerValue.get());
+				essActivePowerValue.get(), essPowerValue.get(), heatPumpPowerValue.get());
 
 		// The heat pump reports its minimum predicted power consumption (IR10302);
 		// starting elevated mode below it would only shift grid consumption
