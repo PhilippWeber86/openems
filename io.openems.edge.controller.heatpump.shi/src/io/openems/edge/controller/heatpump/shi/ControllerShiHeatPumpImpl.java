@@ -314,19 +314,12 @@ public class ControllerShiHeatPumpImpl extends AbstractOpenemsComponent
 		}
 		this._setPowerMeasurementUnavailable(false);
 
-		var gridActivePower = gridPowerValue.get();
-		var essDischargePower = Math.max(0, essPowerValue.get());
-		final var heatPumpPower = Math.max(0, heatPumpPowerValue.get());
-		// PV surplus available for the heat pump, after household and battery
-		// charging took their share and without counting battery discharge:
-		// - BEHIND_GRID_METER: heat pump consumption is part of the grid
-		// measurement, so it must be added back to avoid eating its own surplus.
-		// - GRID_SIDE_OF_GRID_METER: heat pump consumption is invisible at the
-		// grid meter and served by whatever this segment exports.
-		final var surplusPower = switch (this.config.heatPumpPosition()) {
-		case BEHIND_GRID_METER -> Math.max(0, -gridActivePower - essDischargePower + heatPumpPower);
-		case GRID_SIDE_OF_GRID_METER -> Math.max(0, -gridActivePower - essDischargePower);
-		};
+		// The whole power balance of this cycle, derived ONCE and then used by every
+		// decision and every ESS command below. Recalculating parts of it per call
+		// site is what produced the past inconsistencies between the coverage checks
+		// and the constraints actually written to the ESS.
+		final var measured = PowerBalance.of(this.config.heatPumpPosition(), gridPowerValue.get(),
+				this.sum.getEssActivePower().orElse(0), essPowerValue.get(), heatPumpPowerValue.get());
 
 		// The heat pump reports its minimum predicted power consumption (IR10302);
 		// starting elevated mode below it would only shift grid consumption
@@ -347,15 +340,15 @@ public class ControllerShiHeatPumpImpl extends AbstractOpenemsComponent
 		// fully covered and then leave the gap to the grid.
 		var spareEssEnergy = this.calculateSpareEssEnergy();
 		var energyAvailable = this.config.essSupportEnabled() && spareEssEnergy > 0;
-		final var maxSupportPower = !energyAvailable ? 0
-				: this.deliverableSupportPower(gridActivePower, heatPumpPower);
+		final var balance = measured
+				.withMaxSupportPower(!energyAvailable ? 0 : this.deliverableSupportPower(measured));
 		// Battery power the heat pump may be actively DRIVEN with (boost soft limit,
 		// run-extension coverage): the full deliverable support in OFFENSIVE mode, 0
 		// in CLOUD_BUFFER mode where the heat pump follows the PV surplus alone. The
 		// passive support below always uses maxSupportPower, so a heat pump running
 		// on its own is still paid from the battery in both modes.
 		final var invitedSupportPower = this.config.batterySupportMode() == BatterySupportMode.OFFENSIVE
-				? maxSupportPower
+				? balance.maxSupportPower()
 				: 0;
 
 		this.updateNaturalHotWaterSetpoint();
@@ -388,7 +381,7 @@ public class ControllerShiHeatPumpImpl extends AbstractOpenemsComponent
 			elapsedMillis = rawElapsedMillis;
 		}
 
-		var sunSufficient = surplusPower >= minimumPower;
+		var sunSufficient = balance.surplusPower() >= minimumPower;
 		var boostConfirmed = this.updateBoostConfirmation(sunSufficient, elapsedMillis);
 		var forecastVetoed = !this.elevatedModeActive && sunSufficient
 				&& this.isForecastVetoed(minimumPower);
@@ -405,8 +398,8 @@ public class ControllerShiHeatPumpImpl extends AbstractOpenemsComponent
 		// requiredPower + recovery margin, frozen in between) and a decaying TIME budget
 		// (uncovered time accumulates and decays faster while clearly covered), so a few
 		// good cycles cannot wipe the whole switch-off progress.
-		var coverage = surplusPower + invitedSupportPower;
-		var requiredPower = heatPumpPower > 0 ? heatPumpPower : minimumPower;
+		var coverage = balance.surplusPower() + invitedSupportPower;
+		var requiredPower = balance.heatPumpPower() > 0 ? balance.heatPumpPower() : minimumPower;
 		var uncovered = coverage < requiredPower - ELEVATED_HOLD_MARGIN;
 		var clearlyCovered = coverage > requiredPower + ELEVATED_RECOVERY_MARGIN;
 		var switchOffMillis = this.config.switchOffDelay() * 1000L;
@@ -443,16 +436,16 @@ public class ControllerShiHeatPumpImpl extends AbstractOpenemsComponent
 			// during the switching hysteresis a short surplus dip would otherwise
 			// shut down the compressor via a 0 W limit - the SHI documentation
 			// explicitly recommends a switch-off delay for PV-surplus operation
-			this.applyElevatedMode(Math.max(minimumPower, surplusPower + invitedSupportPower));
+			this.applyElevatedMode(Math.max(minimumPower, balance.surplusPower() + invitedSupportPower));
 		} else {
-			this.handleRunExtension(surplusPower, invitedSupportPower, heatPumpPower);
+			this.handleRunExtension(balance.surplusPower(), invitedSupportPower, balance.heatPumpPower());
 			// The soft limit of a self-started run follows the PASSIVE support
 			// (maxSupportPower), which pays for such a run in BOTH battery-support
 			// modes - unlike the invited support, which only drives the boost and the
 			// run extension and is 0 in CLOUD_BUFFER.
-			this.applyNormalMode(surplusPower + maxSupportPower, minimumPower);
+			this.applyNormalMode(balance.surplusPower() + balance.maxSupportPower(), minimumPower);
 		}
-		var appliedSupport = this.applyEssSupport(maxSupportPower, surplusPower, heatPumpPower);
+		var appliedSupport = this.applyEssSupport(balance);
 
 		this._setElevatedModeActive(this.elevatedModeActive);
 		// The free battery energy is the energy released to the heat pump: it is the
@@ -464,42 +457,17 @@ public class ControllerShiHeatPumpImpl extends AbstractOpenemsComponent
 	}
 
 	/**
-	 * Upper bound of the battery support power available for the heat pump: the
-	 * power the ESS can currently deliver (its allowed discharge power) minus the
-	 * share the battery already needs for the household, capped by the configured
-	 * maximum if set. Subtracting the household share is essential: a battery that
-	 * can discharge 3 kW while the household draws 2 kW has only 1 kW left for the
-	 * heat pump, and the coverage checks must see that 1 kW - not the full 3 kW.
+	 * Reads the ESS maximum and lets the {@link PowerBalance} turn it into the
+	 * battery support power available for the heat pump.
 	 *
-	 * @param gridActivePower current grid power in W (import positive)
-	 * @param heatPumpPower   current heat pump consumption in W
+	 * @param balance the {@link PowerBalance} of this cycle
 	 * @return deliverable support power for the heat pump in W
 	 * @throws OpenemsNamedException if the ESS component is not available
 	 */
-	private int deliverableSupportPower(int gridActivePower, int heatPumpPower) throws OpenemsNamedException {
+	private int deliverableSupportPower(PowerBalance balance) throws OpenemsNamedException {
 		ManagedSymmetricEss ess = this.componentManager.getComponent(this.config.ess_id());
-		// Battery power the household currently needs, which must be reserved before
-		// offering the remainder to the heat pump. Deliberately built from the BATTERY
-		// figure: with a HybridEss EssActivePower is the whole inverter, so a household
-		// already served by PV would be reserved from the battery budget a second time
-		// (the PV share is subtracted separately below). The share is additionally
-		// bounded by the discharge itself - the grid may be covering part of the
-		// household deficit. Behind the meter the heat pump is part of the measurement,
-		// so it is removed; grid-side it is invisible and only the household counts.
-		var essDischargePower = this.sum.getEssDischargePower().orElse(0);
-		var householdDeficit = switch (this.config.heatPumpPosition()) {
-		case BEHIND_GRID_METER -> gridActivePower + essDischargePower - heatPumpPower;
-		case GRID_SIDE_OF_GRID_METER -> gridActivePower + essDischargePower;
-		};
-		var householdReserved = Math.min(Math.max(0, essDischargePower), Math.max(0, householdDeficit));
-		// With a HybridEss the solver's maximum is an AC bound and already contains the
-		// PV, while this budget is meant to be BATTERY power - the PV surplus is counted
-		// separately above. The difference of the two _sum channels is that PV share, and
-		// it is zero for an AC-coupled system, where both channels carry the same value.
-		var pvShare = this.pvShareOfEssPower();
-		var deliverable = Math.max(0, ess.getPower().getMaxPower(ess, ALL, ACTIVE) - pvShare - householdReserved);
-		var cap = this.config.maxBatterySupportPower();
-		return cap > 0 ? Math.min(cap, deliverable) : deliverable;
+		return balance.deliverableSupportPower(ess.getPower().getMaxPower(ess, ALL, ACTIVE),
+				this.config.maxBatterySupportPower());
 	}
 
 	/**
@@ -597,8 +565,10 @@ public class ControllerShiHeatPumpImpl extends AbstractOpenemsComponent
 	 * Latches the heat pump's own hot-water setpoint. The readback of IR10121
 	 * only reflects the natural setpoint while no external influence is active,
 	 * so it is sampled exclusively while the hot-water mode readback (HR10005)
-	 * shows "no influence". This also covers controller restarts during an
-	 * active influence and foreign Modbus masters.
+	 * shows "no influence". This also covers a Controller restart that happens
+	 * while an influence is still written to the device: the latch stays empty
+	 * until the heat pump reports "no influence" again, rather than mistaking this
+	 * Controller's own elevated setpoint for the natural one.
 	 */
 	private void updateNaturalHotWaterSetpoint() {
 		if (this.heatPump.getHotWaterModeChannel().value().orElse(-1) == HeatShiHeatPump.MODE_NONE) {
@@ -611,9 +581,11 @@ public class ControllerShiHeatPumpImpl extends AbstractOpenemsComponent
 	}
 
 	/**
-	 * Requires the elevated-mode entry conditions to be fulfilled continuously
-	 * for the configured confirmation time before entry, so short surplus spikes
-	 * do not trigger a committed compressor cycle.
+	 * Requires the elevated-mode entry conditions to have held for the configured
+	 * confirmation time IN SUM before entry, so short surplus spikes do not trigger
+	 * a committed compressor cycle. The budget accumulates while the conditions
+	 * hold and decays faster while they do not, so a brief dip slows the start down
+	 * instead of resetting it.
 	 *
 	 * @param entryConditions whether the entry conditions are currently fulfilled
 	 * @param elapsedMillis   time since the previous evaluation in ms
@@ -777,49 +749,27 @@ public class ControllerShiHeatPumpImpl extends AbstractOpenemsComponent
 	 * capped at the current heat-pump consumption that is not already covered by
 	 * PV export, so battery energy is not sold to the grid.
 	 *
-	 * @param maxSupportPower upper bound of the battery support power in W (0 if no
-	 *                        free energy); the real support is the uncovered
-	 *                        heat-pump power capped at this and clamped by the ESS
-	 * @param surplusPower    current natural PV surplus in W
-	 * @param heatPumpPower   current heat pump consumption in W
+	 * @param balance the {@link PowerBalance} of this cycle
 	 * @return the battery support power actually applied in W
 	 * @throws OpenemsNamedException on error
 	 */
-	/**
-	 * The DC-PV share flowing through the inverter of a HybridEss: the difference
-	 * between the whole-inverter figure and the battery-only figure. Zero on an
-	 * AC-coupled system, where _sum derives both from the same measurement.
-	 *
-	 * @return the PV share of the ESS active power in W
-	 */
-	private int pvShareOfEssPower() {
-		return Math.max(0, this.sum.getEssActivePower().orElse(0) - this.sum.getEssDischargePower().orElse(0));
-	}
-
-	private int applyEssSupport(int maxSupportPower, int surplusPower, int heatPumpPower) throws OpenemsNamedException {
+	private int applyEssSupport(PowerBalance balance) throws OpenemsNamedException {
 		switch (this.config.heatPumpPosition()) {
 		case BEHIND_GRID_METER -> {
 			this._setEssForcedExportPower(null);
 			// Only the uncovered part of the heat pump needs battery; capped at the
 			// deliverable support power and clamped by the ESS below.
-			var supportPower = Math.min(maxSupportPower, heatPumpPower);
+			var supportPower = Math.min(balance.maxSupportPower(), balance.heatPumpPower());
 			ManagedSymmetricEss ess = this.componentManager.getComponent(this.config.ess_id());
-			// Battery discharge the household currently needs - from the BATTERY figure
-			// and bounded by the discharge itself, for the same reason as in
-			// deliverableSupportPower: on a HybridEss EssActivePower is the whole
-			// inverter, so a household served by PV must not be booked as battery draw.
-			var essDischargePower = this.sum.getEssDischargePower().orElse(0);
-			var householdDischarge = Math.min(Math.max(0, essDischargePower), Math.max(0,
-					this.sum.getGridActivePower().orElse(0) + essDischargePower - heatPumpPower));
-			// The allowance above is BATTERY power, but the constraint bounds the ESS
-			// active power - which on a HybridEss is the whole inverter, PV included.
-			// The PV share must therefore be added, otherwise the limit would throttle
-			// usable PV: with 5 kW PV, an idle battery and support disabled the battery
-			// allowance is 0 W, and applying that as an AC bound would cut the inverter
-			// to 0 W and force the heat pump onto the grid despite ample PV. The share
-			// is 0 on an AC-coupled system, where the limit stays a pure battery bound.
+			// The allowance is BATTERY power, but the constraint bounds the ESS ACTIVE
+			// power - on a HybridEss the whole inverter, PV included. The PV share is
+			// therefore added back, otherwise the limit would throttle usable PV: with
+			// 5 kW PV, an idle battery and support disabled the battery allowance is 0 W,
+			// and applying that as an AC bound would cut the inverter to 0 W and force
+			// the heat pump onto the grid despite ample PV. The share is 0 on an
+			// AC-coupled system, where the limit stays a pure battery bound.
 			var limit = ess.getPower().fitValueIntoMinMaxPower(this.id(), ess, ALL, ACTIVE,
-					this.pvShareOfEssPower() + householdDischarge + supportPower);
+					balance.pvShare() + balance.householdDeficit() + supportPower);
 			ess.setActivePowerLessOrEquals(limit);
 			// Reports the bound actually applied, i.e. including the PV share.
 			this._setEssDischargeLimit(limit);
@@ -830,40 +780,32 @@ public class ControllerShiHeatPumpImpl extends AbstractOpenemsComponent
 			// idle or charging (PV covers), rather than the full allowance. This is a
 			// best-effort estimate from the measured flows, since with PV present the
 			// battery cannot be split exactly between household and heat pump.
-			//
-			// Deliberately the battery figure and not ActivePower: on a HybridEss the
-			// latter is the whole inverter and would report battery support while the
-			// battery sits idle and the PV does the work. Identical on an AC-coupled
-			// system, where _sum derives EssDischargePower from ActivePower.
-			return Math.max(0, Math.min(supportPower, Math.max(0, essDischargePower) - householdDischarge));
+			return Math.max(0, Math.min(supportPower, balance.batteryDischarge() - balance.householdDeficit()));
 		}
 		case GRID_SIDE_OF_GRID_METER -> {
 			this._setEssDischargeLimit(null);
-			var forcedExportPower = Math.min(maxSupportPower, Math.max(0, heatPumpPower - surplusPower));
+			var forcedExportPower = Math.min(balance.maxSupportPower(),
+					Math.max(0, balance.heatPumpPower() - balance.surplusPower()));
 			if (forcedExportPower <= 0) {
 				this._setEssForcedExportPower(0);
 				return 0;
 			}
 			ManagedSymmetricEss ess = this.componentManager.getComponent(this.config.ess_id());
-			var essAndGrid = this.sum.getEssActivePower().orElse(0) + this.sum.getGridActivePower().orElse(0);
 			// The export leaving the segment is what reaches the heat pump:
 			// export = rawSurplus + ess, where rawSurplus = -(ess + grid) - it may be
 			// NEGATIVE when the battery is covering the household. Full coverage means
 			// export >= surplusPower + forcedExportPower, hence
 			// ess >= forcedExportPower + surplusPower + (ess + grid).
 			//
-			// surplusPower must not be dropped from that sum: surplusPower is clamped at
-			// 0 while (ess + grid) is not, so the two only cancel while a PV surplus
-			// exists. Omitting it understated the request by exactly the surplus and
-			// drove it negative once the surplus exceeded half the heat-pump power - the
-			// ESS then clamped the request away and no support flowed at all, which is
-			// the situation a boost under a passing cloud is in.
+			// The surplus term is load-bearing and must not be cancelled against
+			// (ess + grid): surplusPower is clamped at 0 while essAndGridPower is not, so
+			// the two only cancel while a PV surplus actually exists.
 			var requiredPower = ess.getPower().fitValueIntoMinMaxPower(this.id(), ess, ALL, ACTIVE,
-					forcedExportPower + surplusPower + essAndGrid);
+					forcedExportPower + balance.surplusPower() + balance.essAndGridPower());
 			ess.setActivePowerGreaterOrEquals(requiredPower);
 			// The request may be clamped down by the ESS; the battery power actually
 			// forced towards the heat pump is the export beyond the PV surplus share.
-			var actualSupport = Math.max(0, requiredPower - surplusPower - essAndGrid);
+			var actualSupport = Math.max(0, requiredPower - balance.surplusPower() - balance.essAndGridPower());
 			this._setEssForcedExportPower(actualSupport);
 			return actualSupport;
 		}

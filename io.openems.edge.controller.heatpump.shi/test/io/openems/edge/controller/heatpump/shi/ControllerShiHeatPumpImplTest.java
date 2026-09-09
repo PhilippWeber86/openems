@@ -1419,6 +1419,104 @@ class ControllerShiHeatPumpImplTest {
 	}
 
 	@Test
+	void testBehindMeterAllowsHouseholdDischargeWhileBatteryIsIdle() throws Exception {
+		var clock = createDummyClock();
+		new ControllerTest(new ControllerShiHeatPumpImpl()) //
+				.addReference("cm", new DummyConfigurationAdmin()) //
+				.addReference("componentManager", new DummyComponentManager(clock)) //
+				.addReference("sum", new DummySum()) //
+				.addReference("heatPump", new DummyHeatShiHeatPump("heatPump0") //
+						.withMeterType(MeterType.CONSUMPTION_METERED)) //
+				.addComponent(new DummyManagedSymmetricEss("ess0") //
+						.setPower(new DummyPower(10_000))) //
+				.activate(MyConfig.create() //
+						.setId("ctrl0") //
+						.setHeatPumpId("heatPump0") //
+						.setEssId("ess0") //
+						.setHeatPumpPosition(HeatPumpPosition.BEHIND_GRID_METER) //
+						.build()) //
+				// The heat pump is off and no energy is free (no prediction), so this
+				// Controller wants NO battery support at all - it must then not stand in
+				// the way of the household either. The household draws 2000 W, entirely
+				// from the grid because the battery has not ramped yet.
+				//
+				// The allowance is the household LOAD, not the discharge already measured:
+				// bounding it by the latter collapses the limit to 0 W with an idle battery
+				// and pins the battery there, so the Balancing Controller can never serve
+				// the household from it.
+				.next(new TestCase("Idle battery, 2 kW household on the grid: allowance is the household load") //
+						.input("_sum", Sum.ChannelId.GRID_ACTIVE_POWER, 2000) //
+						.input("_sum", Sum.ChannelId.ESS_DISCHARGE_POWER, 0) //
+						.input("_sum", Sum.ChannelId.ESS_ACTIVE_POWER, 0) //
+						.input("heatPump0", ElectricityMeter.ChannelId.ACTIVE_POWER, 0) //
+						.output("ess0", ManagedSymmetricEss.ChannelId.SET_ACTIVE_POWER_LESS_OR_EQUALS, 2000) //
+						.output(ControllerShiHeatPump.ChannelId.ESS_DISCHARGE_LIMIT, 2000) //
+						.output(ControllerShiHeatPump.ChannelId.ESS_SUPPORT_POWER, 0)) //
+				// The battery has taken over 1500 W of the unchanged 2000 W load. The
+				// allowance must stay at 2000 W so the ramp can finish; bounding it by the
+				// measured discharge would freeze it at 1500 W - a ratchet that can only
+				// ever follow, never lead, and that leaves the rest on the grid for good.
+				.next(new TestCase("Battery ramping, load unchanged: allowance stays at the household load") //
+						.input("_sum", Sum.ChannelId.GRID_ACTIVE_POWER, 500) //
+						.input("_sum", Sum.ChannelId.ESS_DISCHARGE_POWER, 1500) //
+						.input("_sum", Sum.ChannelId.ESS_ACTIVE_POWER, 1500) //
+						.input("heatPump0", ElectricityMeter.ChannelId.ACTIVE_POWER, 0) //
+						.output("ess0", ManagedSymmetricEss.ChannelId.SET_ACTIVE_POWER_LESS_OR_EQUALS, 2000) //
+						.output(ControllerShiHeatPump.ChannelId.ESS_DISCHARGE_LIMIT, 2000)) //
+				.deactivate();
+	}
+
+	@Test
+	void testHouseholdOnTheGridStillReservesBatteryBudget() throws Exception {
+		var clock = createDummyClock();
+		var cm = new DummyComponentManager(clock);
+		var sum = new DummySum();
+		new ControllerTest(new ControllerShiHeatPumpImpl()) //
+				.addReference("cm", new DummyConfigurationAdmin()) //
+				.addReference("componentManager", cm) //
+				.addReference("sum", sum) //
+				.addReference("predictorManager", sunnyPredictor(cm, sum, Instant.now(clock))) //
+				.addReference("heatPump", new DummyHeatShiHeatPump("heatPump0")) //
+				// The ESS can discharge 4 kW in total, tight enough that the household
+				// reservation is what limits the support.
+				.addComponent(new DummyManagedSymmetricEss("ess0") //
+						.setPower(new DummyPower(4000))) //
+				.activate(MyConfig.create() //
+						.setId("ctrl0") //
+						.setHeatPumpId("heatPump0") //
+						.setEssId("ess0") //
+						.setHeatPumpPosition(HeatPumpPosition.GRID_SIDE_OF_GRID_METER) //
+						.setMinimumSurplusPowerForElevatedMode(5000) //
+						.build()) //
+				// Same 2 kW household as testHouseholdShareReservedFromSupport, but drawn
+				// from the GRID while the battery is still idle - the need is identical, only
+				// the current split differs. Of the 4 kW the ESS can deliver, 2 kW have to be
+				// reserved, so only 2 kW are left for the heat pump: a natural 2500 W
+				// hot-water run is NOT fully covered (0 surplus + 2 kW < 2500 W) and the run
+				// extension must not start.
+				//
+				// Bounding the reservation by the measured discharge reports the whole 4 kW
+				// as free here, the coverage check starts the extension, and the shortfall
+				// goes to the grid as soon as the Balancing Controller claims the battery for
+				// the household.
+				.next(new TestCase("Household on the grid: budget is reserved all the same") //
+						.input("_sum", Sum.ChannelId.GRID_ACTIVE_POWER, 2000) //
+						.input("_sum", Sum.ChannelId.ESS_DISCHARGE_POWER, 0) //
+						.input("_sum", Sum.ChannelId.ESS_ACTIVE_POWER, 0) //
+						.input("_sum", Sum.ChannelId.ESS_SOC, 65) //
+						.input("_sum", Sum.ChannelId.ESS_CAPACITY, 10_000) //
+						.input("heatPump0", ElectricityMeter.ChannelId.ACTIVE_POWER, 2500) //
+						.input("heatPump0", HeatShiHeatPump.ChannelId.OPERATING_MODE_STATUS, 1) //
+						.input("heatPump0", HeatShiHeatPump.ChannelId.HOT_WATER_STATUS, 3) //
+						.input("heatPump0", HeatShiHeatPump.ChannelId.HOT_WATER_MODE, 0) //
+						.input("heatPump0", HeatShiHeatPump.ChannelId.HOT_WATER_ACTIVE_SETPOINT, 480) //
+						.output(ControllerShiHeatPump.ChannelId.ELEVATED_MODE_ACTIVE, false) //
+						.output(ControllerShiHeatPump.ChannelId.RUN_EXTENSION_ACTIVE, false) //
+						.output(ControllerShiHeatPump.ChannelId.ESS_FORCED_EXPORT_POWER, 2000)) //
+				.deactivate();
+	}
+
+	@Test
 	void testPredictionsFromUnmanagedChannels() throws Exception {
 		var clock = createDummyClock();
 		var cm = new DummyComponentManager(clock);
