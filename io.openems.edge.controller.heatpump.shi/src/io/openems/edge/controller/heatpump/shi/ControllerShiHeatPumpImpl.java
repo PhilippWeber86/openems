@@ -133,6 +133,7 @@ public class ControllerShiHeatPumpImpl extends AbstractOpenemsComponent
 	private int extensionMinDeltaDeciKelvin;
 	// Forecast charge/discharge model, converted once from the percent config
 	private int maxForecastChargePower;
+	private float forecastChargeCRate;
 	private float forecastChargeEfficiency;
 	private float forecastDischargeEfficiency;
 	private Instant lastModeChange = Instant.MIN;
@@ -199,6 +200,7 @@ public class ControllerShiHeatPumpImpl extends AbstractOpenemsComponent
 		// Efficiencies are ratios in (0,1]; the lower clamp of 1 % keeps the division
 		// in the flow calculation finite on a misconfigured 0.
 		this.maxForecastChargePower = Math.max(0, config.maxForecastChargePower());
+		this.forecastChargeCRate = (float) Math.max(0, config.forecastChargeCRate());
 		this.forecastChargeEfficiency = clamp(1, config.forecastChargeEfficiency(), 100) / 100F;
 		this.forecastDischargeEfficiency = clamp(1, config.forecastDischargeEfficiency(), 100) / 100F;
 		OpenemsComponent.updateReferenceFilter(this.cm, this.servicePid(), "heatPump", config.heatPump_id());
@@ -853,10 +855,10 @@ public class ControllerShiHeatPumpImpl extends AbstractOpenemsComponent
 	 * @return the {@link BatteryReserveCalculator.Result}
 	 */
 	private BatteryReserveCalculator.Result calculateBatteryReserve() {
-		var calculator = new BatteryReserveCalculator(this.config.nightReserveMode(), this.config.minSoc(),
-				this.config.nightReserveBuffer(), this.maxForecastChargePower, this.forecastChargeEfficiency,
-				this.forecastDischargeEfficiency);
 		var essCapacity = this.sum.getEssCapacity().orElse(0);
+		var calculator = new BatteryReserveCalculator(this.config.nightReserveMode(), this.config.minSoc(),
+				this.config.nightReserveBuffer(), this.forecastChargePower(essCapacity),
+				this.forecastChargeEfficiency, this.forecastDischargeEfficiency);
 		var usableEnergy = calculator.usableEnergy(this.sum.getEssSoc().orElse(0), essCapacity);
 		if (usableEnergy <= 0) {
 			return Result.of(Reason.NO_USABLE_ENERGY);
@@ -883,6 +885,37 @@ public class ControllerShiHeatPumpImpl extends AbstractOpenemsComponent
 				this.predictorManager.getPrediction(SUM_UNMANAGED_CONSUMPTION_ACTIVE_POWER).toMapWithAllQuarters(),
 				this.predictorManager.getPrediction(SUM_CONSUMPTION_ACTIVE_POWER).toMapWithAllQuarters(),
 				heatPumpPrediction.toMapWithAllQuarters());
+	}
+
+	/**
+	 * The battery charge power the forecast may credit, in W: the configured charge
+	 * rate applied to the battery capacity, or the absolute override when one is
+	 * configured.
+	 *
+	 * <p>
+	 * Derived from the CAPACITY on purpose. It is a standard {@code SymmetricEss}
+	 * Channel and the reserve calculation already requires it - a capacity of 0
+	 * releases nothing - so expressing the charge power as a C-rate introduces no
+	 * new way for the calculation to be unavailable, and it needs nothing
+	 * make-specific. The obvious alternatives do not work: no ESS nature is required
+	 * to publish the battery's charge capability at all, the nature-declared
+	 * {@code AllowedChargePower} is momentary and reads 0 W on a full battery - which
+	 * would suppress the whole next day's recharge - and {@code MaxApparentPower} is
+	 * the inverter rating rather than the battery's.
+	 *
+	 * <p>
+	 * A rate that is too low only credits less recharge, which enlarges the reserve:
+	 * the safe direction. Too high is the dangerous one, so the default stays at a
+	 * typical continuous rate rather than a peak.
+	 *
+	 * @param essCapacity the battery capacity in Wh
+	 * @return the charge power in W to credit (&gt;= 0)
+	 */
+	private int forecastChargePower(int essCapacity) {
+		if (this.maxForecastChargePower > 0) {
+			return this.maxForecastChargePower;
+		}
+		return Math.max(0, Math.round(essCapacity * this.forecastChargeCRate));
 	}
 
 	/**

@@ -2555,6 +2555,8 @@ class ControllerShiHeatPumpImplTest {
 						.setNightReserveBuffer(100) //
 						.setNightReserveMode(NightReserveMode.MAX_DEFICIT) //
 						.setMaxForecastChargePower(maxForecastChargePower) //
+						// The absolute value governs these cases; the C-rate has its own test.
+						.setForecastChargeCRate(0) //
 						.setForecastChargeEfficiency(chargeEfficiency) //
 						.setForecastDischargeEfficiency(dischargeEfficiency) //
 						.build()) //
@@ -2582,9 +2584,9 @@ class ControllerShiHeatPumpImplTest {
 		// 2000 - 1000 + 2000 = 3000 Wh and just 2000 Wh stay free. This is the case the
 		// unlimited model got wrong: it credited a 10 kW surplus to a 1 kW battery.
 		assertFreeEnergyOnRechargeWindow(1000, 100, 100, 2000);
-		// No dependable plant limit configured (the default): credit NO future
-		// recharge. Both deficits then add up to 4000 Wh and only 1000 Wh are free -
-		// the conservative fallback.
+		// Nothing credited at all (absolute 0 W and the C-rate pinned to 0): both
+		// deficits add up to 4000 Wh and only 1000 Wh stay free. This is the floor the
+		// model can be driven to, not the default.
 		assertFreeEnergyOnRechargeWindow(0, 100, 100, 1000);
 	}
 
@@ -2657,6 +2659,71 @@ class ControllerShiHeatPumpImplTest {
 						.output(ControllerShiHeatPump.ChannelId.NIGHT_RESERVE_ENERGY, 4000) //
 						.output(ControllerShiHeatPump.ChannelId.FREE_BATTERY_ENERGY, 1000)) //
 				.deactivate();
+	}
+
+	/**
+	 * Runs one cycle of the {@link #rechargeWindowPredictor} forecast with the
+	 * charge power derived from the capacity, and asserts the free energy.
+	 *
+	 * @param cRate              the configured charge rate in C
+	 * @param absoluteOverride    the absolute override in W; 0 = derive
+	 * @param expectedFreeEnergy the expected free battery energy in Wh
+	 * @throws Exception on error
+	 */
+	private static void assertFreeEnergyWithChargeRate(double cRate, int absoluteOverride, int expectedFreeEnergy)
+			throws Exception {
+		var clock = createDummyClock();
+		var cm = new DummyComponentManager(clock);
+		var sum = new DummySum();
+		new ControllerTest(new ControllerShiHeatPumpImpl()) //
+				.addReference("cm", new DummyConfigurationAdmin()) //
+				.addReference("componentManager", cm) //
+				.addReference("sum", sum) //
+				.addReference("predictorManager", rechargeWindowPredictor(cm, sum, Instant.now(clock))) //
+				.addReference("heatPump", new DummyHeatShiHeatPump("heatPump0")) //
+				.addComponent(new DummyManagedSymmetricEss("ess0") //
+						.setPower(new DummyPower(10_000))) //
+				.activate(MyConfig.create() //
+						.setId("ctrl0") //
+						.setHeatPumpId("heatPump0") //
+						.setEssId("ess0") //
+						.setHeatPumpPosition(HeatPumpPosition.GRID_SIDE_OF_GRID_METER) //
+						.setMinSoc(15) //
+						.setNightReserveBuffer(100) //
+						.setNightReserveMode(NightReserveMode.MAX_DEFICIT) //
+						.setForecastChargeCRate(cRate) //
+						.setMaxForecastChargePower(absoluteOverride) //
+						.setForecastChargeEfficiency(100) //
+						.setForecastDischargeEfficiency(100) //
+						.build()) //
+				.next(new TestCase(cRate + " C, override " + absoluteOverride + " W") //
+						.input("_sum", Sum.ChannelId.GRID_ACTIVE_POWER, 0) //
+						.input("_sum", Sum.ChannelId.ESS_DISCHARGE_POWER, 0) //
+						.input("_sum", Sum.ChannelId.ESS_ACTIVE_POWER, 0) //
+						.input("_sum", Sum.ChannelId.ESS_SOC, 65) //
+						.input("_sum", Sum.ChannelId.ESS_CAPACITY, 10_000) //
+						.input("heatPump0", ElectricityMeter.ChannelId.ACTIVE_POWER, 0) //
+						.output(ControllerShiHeatPump.ChannelId.FREE_BATTERY_ENERGY, expectedFreeEnergy)) //
+				.deactivate();
+	}
+
+	@Test
+	void testForecastChargePowerFollowsTheCapacityAndChargeRate() throws Exception {
+		// The charge power comes from the battery CAPACITY, a standard SymmetricEss
+		// Channel the reserve calculation already requires - so this needs nothing
+		// make-specific, and a capacity that is unavailable already releases nothing.
+		// 10 kWh of capacity, so 0.1 C = 1000 W: the forecast's 10 kWh window is
+		// credited as 1 kWh, leaving a 3000 Wh deficit of the 5000 Wh usable.
+		assertFreeEnergyWithChargeRate(0.1, 0, 2000);
+		// 0.5 C = 5000 W absorbs the whole window, so the first deficit is repaid and
+		// only the second one stands.
+		assertFreeEnergyWithChargeRate(0.5, 0, 3000);
+		// A slower battery credits less and therefore reserves MORE - the safe
+		// direction for a value that is an assumption rather than a measurement.
+		assertFreeEnergyWithChargeRate(0.02, 0, 1200);
+		// The absolute override wins over the rate when a plant's charge power is
+		// known and does not follow from its capacity.
+		assertFreeEnergyWithChargeRate(0.5, 1000, 2000);
 	}
 
 	@Test

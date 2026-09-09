@@ -21,6 +21,7 @@ public class MyConfig extends AbstractComponentConfig implements Config {
 		private int minSoc = 15;
 		private int nightReserveBuffer = 120;
 		private int maxForecastChargePower = 0;
+		private double forecastChargeCRate = 0.5;
 		private int forecastChargeEfficiency = 95;
 		private int forecastDischargeEfficiency = 95;
 		private int maxBatterySupportPower = 0;
@@ -140,6 +141,11 @@ public class MyConfig extends AbstractComponentConfig implements Config {
 			return this;
 		}
 
+		public Builder setForecastChargeCRate(double value) {
+			this.forecastChargeCRate = value;
+			return this;
+		}
+
 		public Builder setForecastChargeEfficiency(int value) {
 			this.forecastChargeEfficiency = value;
 			return this;
@@ -239,6 +245,11 @@ public class MyConfig extends AbstractComponentConfig implements Config {
 	@Override
 	public int maxForecastChargePower() {
 		return this.builder.maxForecastChargePower;
+	}
+
+	@Override
+	public double forecastChargeCRate() {
+		return this.builder.forecastChargeCRate;
 	}
 
 	@Override
