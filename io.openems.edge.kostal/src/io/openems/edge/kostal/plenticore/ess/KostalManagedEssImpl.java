@@ -47,6 +47,7 @@ import io.openems.edge.bridge.modbus.api.task.FC16WriteRegistersTask;
 import io.openems.edge.bridge.modbus.api.task.FC3ReadRegistersTask;
 import io.openems.edge.bridge.modbus.api.task.Task.ExecuteState;
 import io.openems.edge.common.channel.IntegerWriteChannel;
+import io.openems.edge.common.component.ComponentManager;
 import io.openems.edge.common.component.OpenemsComponent;
 import io.openems.edge.common.sum.GridMode;
 import io.openems.edge.common.sum.Sum;
@@ -56,6 +57,7 @@ import io.openems.edge.ess.api.ManagedSymmetricEss;
 import io.openems.edge.ess.api.SymmetricEss;
 import io.openems.edge.ess.power.api.Power;
 import io.openems.edge.kostal.plenticore.enums.ControlMode;
+import io.openems.edge.kostal.plenticore.enums.ReleaseReason;
 import io.openems.edge.timedata.api.Timedata;
 import io.openems.edge.timedata.api.TimedataProvider;
 import io.openems.edge.timedata.api.utils.CalculateEnergyFromPower;
@@ -77,6 +79,13 @@ public class KostalManagedEssImpl extends AbstractOpenemsModbusComponent impleme
 
 	@Reference
 	private Power power;
+
+	/**
+	 * Only for the clock: the watchdog refresh is a time decision, and with
+	 * Instant.now() its boundaries can be tested only by really waiting.
+	 */
+	@Reference
+	private ComponentManager componentManager;
 
 	@Reference
 	private Sum sum;
@@ -179,65 +188,92 @@ public class KostalManagedEssImpl extends AbstractOpenemsModbusComponent impleme
 		this.channel(KostalManagedEss.ChannelId.SMART_MODE_NOT_WORKING_WITH_FILTER)
 				.setNextValue(this.controlMode == ControlMode.SMART && this.power.isFilterEnabled());
 
-		// managed or internal mode -> switch to max. self consumption automatic
-		// (no writes to channel)
-		if (this.isManaged() && this.controlMode != ControlMode.INTERNAL) {
-			// SMART mode: within the idle band there is no active set-point to apply.
-			// Stop writing (and do not refresh at the watchdog) so the inverter's
-			// control timeout expires and it returns to its internal self-consumption
-			// regulation - instead of pinning the battery at 0 W. The
-			// battery-management-mode register is read-only, so this fallback timeout
-			// is the only way to hand control back to the inverter (see the KOSTAL
-			// MODBUS-TCP documentation, section "External battery management").
-			var releaseReason = this.controlMode == ControlMode.SMART ? this.releaseReason(activePower, diffBalancing)
-					: null;
-			if (releaseReason != null) {
-				if (this.lastSetPower != null) {
-					this.logInfo(log, "Releasing battery to internal 'AUTO' mode: " + releaseReason);
-				}
-				// reset both, so re-engaging writes immediately instead of being skipped
-				this.lastSetPower = null;
-				this.lastApplyPower = Instant.MIN;
-				return;
-			}
-
-			Instant now = Instant.now();
-			int powerToWrite = activePower;
-
-			// Apply idle zone: values within +/- tolerance around zero are set to 0W.
-			// This prevents constant charge/discharge switching on small grid
-			// fluctuations. REMOTE keeps full control and does not release to AUTO.
-			if (Math.abs(activePower) < this.tolerance) {
-				powerToWrite = 0;
-			}
-
-			// Refresh well before the inverter's control timeout elapses; refreshing only
-			// at the boundary lets the inverter drop back into its internal mode for a
-			// moment before every refresh.
-			var refreshInterval = Math.max(1, this.watchdog / 2);
-			var refreshDue = Duration.between(this.lastApplyPower, now).getSeconds() >= refreshInterval;
-
-			// Skip only an unchanged set-point that is still fresh. Small changes are NOT
-			// suppressed: with the Ess.Power PID filter active that would be a dead-band
-			// between controller and actuator, and a dead-band in front of an integral
-			// term winds up until it breaks through - a limit cycle. Damping is the job of
-			// the filter, or of the inverter's power gradient.
-			if (this.lastSetPower != null && powerToWrite == this.lastSetPower && !refreshDue) {
-				log.debug("skipped - power unchanged at " + powerToWrite + "W");
-				return;
-			}
-
-			// Kostal is fine by writing one register with signed value
-			IntegerWriteChannel setActivePowerChannel = this.channel(KostalManagedEss.ChannelId.SET_ACTIVE_POWER);
-			setActivePowerChannel.setNextWriteValue(powerToWrite);
-
-			this.lastSetPower = powerToWrite;
-			this.lastApplyPower = now;
-
-			log.debug("--> activePowerWanted: " + powerToWrite + "W (requested: " + activePower + "W)");
-		} else {
+		// Read-Only and INTERNAL never write: leaving the inverter alone IS its
+		// internal self-consumption regulation.
+		if (!this.isManaged() || this.controlMode == ControlMode.INTERNAL) {
 			this.lastSetPower = null;
+			return;
 		}
+
+		// Decide - control externally, or hand the battery back?
+		var release = this.controlMode == ControlMode.SMART //
+				? this.releaseReason(activePower, diffBalancing) //
+				: null;
+		if (release != null) {
+			this.releaseToInternalMode(release, activePower);
+			return;
+		}
+
+		// Idle zone: a request within +/- tolerance around zero is written as 0 W, which
+		// keeps small grid fluctuations from flipping the battery between charge and
+		// discharge. REMOTE ends up here as well - it keeps full control and holds the
+		// battery at zero instead of releasing it.
+		this.transmit(Math.abs(activePower) < this.tolerance ? 0 : activePower, activePower);
+	}
+
+	/**
+	 * Hands the battery back to the inverter's internal 'AUTO' regulation.
+	 *
+	 * <p>
+	 * Nothing is written AND the watchdog is deliberately not refreshed, so the
+	 * inverter's control timeout expires and its own self-consumption regulation
+	 * takes over - instead of the battery being pinned at 0 W. The
+	 * battery-management-mode register is read-only, so that timeout is the only way
+	 * back (see the KOSTAL MODBUS-TCP documentation, section "External battery
+	 * management").
+	 *
+	 * @param reason      why the battery is released
+	 * @param activePower the solved set-point, for the log
+	 */
+	private void releaseToInternalMode(ReleaseReason reason, int activePower) {
+		if (this.lastSetPower != null) {
+			this.logInfo(log, "Releasing battery to internal 'AUTO' mode: " + reason.getDescription() //
+					+ " (set-point " + activePower + "W)");
+		}
+		// Clearing the last set-point is what makes re-engaging write immediately: the
+		// skip in transmit() only applies while one is known. The timestamp goes with
+		// it because it dates a write we no longer own - not observable on its own,
+		// but leaving the two out of step invites a wrong answer later.
+		this.lastSetPower = null;
+		this.lastApplyPower = Instant.MIN;
+	}
+
+	/**
+	 * Sends a set-point to the inverter - now, or not at all this Cycle.
+	 *
+	 * <p>
+	 * Only an UNCHANGED set-point is skipped, and only while it is still fresh. Small
+	 * changes are written: with the Ess.Power PID filter active, suppressing them
+	 * would be a dead-band between controller and actuator, and a dead-band in front
+	 * of an integral term winds up until it breaks through - a limit cycle. Damping
+	 * is the job of the filter, or of the inverter's power gradient.
+	 *
+	 * @param setPoint  the value to write
+	 * @param requested the solved set-point before the idle zone, for the log
+	 * @throws OpenemsNamedException on error
+	 */
+	private void transmit(int setPoint, int requested) throws OpenemsNamedException {
+		var now = Instant.now(this.componentManager.getClock());
+
+		// Refresh well before the inverter's control timeout elapses; refreshing only at
+		// the boundary lets the inverter drop back into its internal mode for a moment
+		// before every refresh.
+		var refreshInterval = Math.max(1, this.watchdog / 2);
+		var refreshDue = Duration.between(this.lastApplyPower, now).getSeconds() >= refreshInterval;
+
+		if (this.lastSetPower != null && setPoint == this.lastSetPower && !refreshDue) {
+			log.debug("skipped - power unchanged at " + setPoint + "W");
+			return;
+		}
+
+		// Kostal is fine by writing one register with signed value
+		IntegerWriteChannel setActivePowerChannel = this.channel(KostalManagedEss.ChannelId.SET_ACTIVE_POWER);
+		setActivePowerChannel.setNextWriteValue(setPoint);
+
+		this.lastSetPower = setPoint;
+		this.lastApplyPower = now;
+
+		log.debug("--> activePowerWanted: " + setPoint + "W (requested: " + requested + "W)");
 	}
 
 	/**
@@ -303,10 +339,10 @@ public class KostalManagedEssImpl extends AbstractOpenemsModbusComponent impleme
 	 * @param diffBalancing the value from {@link #calculateDiffBalancing}, may be null
 	 * @return the reason to release, or null to keep control
 	 */
-	private String releaseReason(int activePower, Integer diffBalancing) {
+	private ReleaseReason releaseReason(int activePower, Integer diffBalancing) {
 		if (Math.abs(activePower) < this.tolerance && !this.hasHardLimit()) {
 			// nothing is being asked of the battery at all
-			return "idle zone, |" + activePower + "W| < " + this.tolerance + "W";
+			return ReleaseReason.IDLE_ZONE;
 		}
 		if (diffBalancing == null) {
 			return null;
@@ -317,7 +353,7 @@ public class KostalManagedEssImpl extends AbstractOpenemsModbusComponent impleme
 			// with no Ess.Power filter the set-point is computed from the same process
 			// image, so the equality is exact by construction, and a wider band would
 			// swallow a genuine small request.
-			return "set-point matches plain balancing to zero";
+			return ReleaseReason.MATCHES_BALANCING;
 		}
 		if (this.batteryLimitation) {
 			var minPower = this.power.getMinPower(this, ALL, ACTIVE);
@@ -331,7 +367,7 @@ public class KostalManagedEssImpl extends AbstractOpenemsModbusComponent impleme
 			// leaves the discharge side open, so minimum != maximum.
 			if (minPower < 0 && activePower == minPower
 					&& minPower != this.power.getMaxPower(this, ALL, ACTIVE)) {
-				return "at the charge limit, which the inverter enforces itself";
+				return ReleaseReason.AT_CHARGE_LIMIT;
 			}
 		}
 		return null;

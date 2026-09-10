@@ -1,9 +1,15 @@
 package io.openems.edge.kostal.plenticore.ess;
 
+import static io.openems.common.test.TestUtils.createDummyClock;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 
+import java.time.Clock;
+import java.time.temporal.ChronoUnit;
+
 import org.junit.jupiter.api.Test;
+
+import io.openems.common.test.TimeLeapClock;
 
 import io.openems.edge.bridge.modbus.test.DummyModbusBridge;
 import io.openems.edge.common.channel.IntegerWriteChannel;
@@ -14,6 +20,7 @@ import io.openems.edge.ess.api.ManagedSymmetricEss;
 import io.openems.edge.ess.power.api.Pwr;
 import io.openems.edge.ess.test.DummyPower;
 import io.openems.edge.common.test.ComponentTest;
+import io.openems.edge.common.test.DummyComponentManager;
 import io.openems.edge.kostal.plenticore.enums.ControlMode;
 
 public class KostalManagedEssImplTest {
@@ -26,6 +33,7 @@ public class KostalManagedEssImplTest {
 				.addReference("setModbus", new DummyModbusBridge("modbus0")) //
 				.addReference("sum", new DummySum()) //
 				.addReference("power", new DummyPower()) //
+				.addReference("componentManager", new DummyComponentManager()) //
 				.activate(MyConfig.create() //
 						.setId("ess0") //
 						.setReadOnlyMode(true) //
@@ -50,11 +58,27 @@ public class KostalManagedEssImplTest {
 	 * @throws Exception on error
 	 */
 	private static KostalManagedEssImpl activate(ControlMode controlMode, boolean readOnly) throws Exception {
+		return activate(controlMode, readOnly, createDummyClock());
+	}
+
+	/**
+	 * Activates a {@link KostalManagedEssImpl} on a clock the test controls, so the
+	 * watchdog refresh can be driven without waiting.
+	 *
+	 * @param controlMode the {@link ControlMode}
+	 * @param readOnly    the Read-Only mode
+	 * @param clock       the {@link Clock}
+	 * @return the activated component
+	 * @throws Exception on error
+	 */
+	private static KostalManagedEssImpl activate(ControlMode controlMode, boolean readOnly, Clock clock)
+			throws Exception {
 		var ess = new KostalManagedEssImpl();
 		new ComponentTest(ess) //
 				.addReference("setModbus", new DummyModbusBridge("modbus0")) //
 				.addReference("sum", new DummySum()) //
 				.addReference("power", new DummyPower()) //
+				.addReference("componentManager", new DummyComponentManager(clock)) //
 				.activate(MyConfig.create() //
 						.setId("ess0") //
 						.setReadOnlyMode(readOnly) //
@@ -149,6 +173,7 @@ public class KostalManagedEssImplTest {
 				.addReference("setModbus", new DummyModbusBridge("modbus0")) //
 				.addReference("sum", new DummySum()) //
 				.addReference("power", powerWithRange(-5000, 0)) //
+				.addReference("componentManager", new DummyComponentManager()) //
 				.activate(MyConfig.create() //
 						.setId("ess0") //
 						.setReadOnlyMode(false) //
@@ -200,6 +225,53 @@ public class KostalManagedEssImplTest {
 
 		ess.applyPower(-3000, 0);
 
+		assertNull(writtenSetPoint(ess));
+	}
+
+	@Test
+	public void testUnchangedSetPointIsRefreshedAtHalfTheWatchdog() throws Exception {
+		var clock = new TimeLeapClock(java.time.Instant.ofEpochSecond(1577836800));
+		// watchdog 20 s, so the refresh is due after 10 s
+		var ess = activate(ControlMode.REMOTE, false, clock);
+
+		ess.applyPower(-3000, 0);
+		assertEquals(Integer.valueOf(-3000), writtenSetPoint(ess));
+
+		// unchanged and still fresh: nothing goes onto the bus
+		clock.leap(9, ChronoUnit.SECONDS);
+		ess.applyPower(-3000, 0);
+		assertNull(writtenSetPoint(ess));
+
+		// half the watchdog gone: refreshed well before the inverter's control timeout,
+		// which would otherwise drop it into internal mode for a moment every time
+		clock.leap(1, ChronoUnit.SECONDS);
+		ess.applyPower(-3000, 0);
+		assertEquals(Integer.valueOf(-3000), writtenSetPoint(ess));
+
+		// and the clock starts over from that write
+		clock.leap(9, ChronoUnit.SECONDS);
+		ess.applyPower(-3000, 0);
+		assertNull(writtenSetPoint(ess));
+	}
+
+	@Test
+	public void testAReleasedBatteryIsNeverRefreshed() throws Exception {
+		var clock = new TimeLeapClock(java.time.Instant.ofEpochSecond(1577836800));
+		var ess = activate(ControlMode.SMART, false, clock);
+
+		ess.applyPower(-3000, 0);
+		assertEquals(Integer.valueOf(-3000), writtenSetPoint(ess));
+
+		// into the idle zone: released
+		ess.applyPower(0, 0);
+		assertNull(writtenSetPoint(ess));
+
+		// Long past the watchdog nothing may be written. A refresh here would keep the
+		// inverter's control timeout alive forever, and the battery would stay pinned
+		// instead of returning to internal self-consumption - the whole point of the
+		// release.
+		clock.leap(5 * 20, ChronoUnit.SECONDS);
+		ess.applyPower(0, 0);
 		assertNull(writtenSetPoint(ess));
 	}
 }

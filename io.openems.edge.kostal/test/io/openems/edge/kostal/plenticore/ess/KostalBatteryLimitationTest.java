@@ -16,6 +16,7 @@ import io.openems.edge.common.channel.IntegerWriteChannel;
 import io.openems.edge.common.sum.DummySum;
 import io.openems.edge.common.test.AbstractComponentTest.TestCase;
 import io.openems.edge.common.test.ComponentTest;
+import io.openems.edge.common.test.DummyComponentManager;
 import io.openems.edge.common.type.Phase.SingleOrAllPhase;
 import io.openems.edge.ess.api.ManagedSymmetricEss;
 import io.openems.edge.ess.power.api.Power;
@@ -97,6 +98,7 @@ public class KostalBatteryLimitationTest {
 				.addReference("setModbus", modbus) //
 				.addReference("sum", sum) //
 				.addReference("power", power) //
+				.addReference("componentManager", new DummyComponentManager()) //
 				.activate(config(controlMode)) //
 				// enough Cycles for the LOW priority tasks to have come round at least once
 				.next(new TestCase(), 20);
