@@ -73,7 +73,8 @@ import io.openems.edge.timedata.api.utils.CalculateEnergyFromPower;
 })
 @GenerateTargetsFromReferences("Modbus")
 public class KostalManagedEssImpl extends AbstractOpenemsModbusComponent implements KostalManagedEss,
-		ManagedSymmetricEss, SymmetricEss, ModbusComponent, TimedataProvider, EventHandler, OpenemsComponent {
+		ManagedSymmetricEss, HybridEss, SymmetricEss, ModbusComponent, TimedataProvider, EventHandler,
+		OpenemsComponent {
 
 	private static final Logger log = LoggerFactory.getLogger(KostalManagedEssImpl.class);
 
@@ -127,6 +128,10 @@ public class KostalManagedEssImpl extends AbstractOpenemsModbusComponent impleme
 			SymmetricEss.ChannelId.ACTIVE_CHARGE_ENERGY);
 	private final CalculateEnergyFromPower calculateAcDischargeEnergy = new CalculateEnergyFromPower(this,
 			SymmetricEss.ChannelId.ACTIVE_DISCHARGE_ENERGY);
+	private final CalculateEnergyFromPower calculateDcChargeEnergy = new CalculateEnergyFromPower(this,
+			HybridEss.ChannelId.DC_CHARGE_ENERGY);
+	private final CalculateEnergyFromPower calculateDcDischargeEnergy = new CalculateEnergyFromPower(this,
+			HybridEss.ChannelId.DC_DISCHARGE_ENERGY);
 
 	/**
 	 * Constructor for KostalManagedESSImpl. Initializes the component with default
@@ -177,14 +182,13 @@ public class KostalManagedEssImpl extends AbstractOpenemsModbusComponent impleme
 	 */
 	@Override
 	public void applyPower(int activePower, int reactivePower) throws OpenemsNamedException {
-		// Using separate channel for the demanded charge/discharge power
-		this._setChargePowerWanted(activePower);
+		final var pvProduction = this.acPvProduction();
 
 		// Independent of the control mode: hand the effective power limits to the
 		// inverter, so its internal regulation stays inside them as well.
-		this.applyBatteryLimitation();
+		this.applyBatteryLimitation(pvProduction);
 
-		var diffBalancing = this.calculateDiffBalancing(activePower);
+		final var diffBalancing = this.calculateDiffBalancing(activePower);
 		this.channel(KostalManagedEss.ChannelId.SMART_MODE_NOT_WORKING_WITH_FILTER)
 				.setNextValue(this.controlMode == ControlMode.SMART && this.power.isFilterEnabled());
 
@@ -195,12 +199,27 @@ public class KostalManagedEssImpl extends AbstractOpenemsModbusComponent impleme
 			return;
 		}
 
+		if (pvProduction == null) {
+			// Without the PV share the AC set-point cannot be turned into a battery
+			// set-point, and guessing would command the battery to the whole AC target.
+			// Happens for the first Cycles after a start.
+			this.lastSetPower = null;
+			this.lastApplyPower = Instant.MIN;
+			return;
+		}
+
+		// Register 1034 takes a BATTERY set-point while activePower is the inverter's AC
+		// power, so what is left for the battery is the difference. Same conversion as
+		// GoodWe's ApplyPowerHandler.handleRemoteMode.
+		final var batterySetPoint = activePower - pvProduction;
+		this._setChargePowerWanted(batterySetPoint);
+
 		// Decide - control externally, or hand the battery back?
 		var release = this.controlMode == ControlMode.SMART //
-				? this.releaseReason(activePower, diffBalancing) //
+				? this.releaseReason(activePower, batterySetPoint, diffBalancing) //
 				: null;
 		if (release != null) {
-			this.releaseToInternalMode(release, activePower);
+			this.releaseToInternalMode(release, batterySetPoint);
 			return;
 		}
 
@@ -208,7 +227,7 @@ public class KostalManagedEssImpl extends AbstractOpenemsModbusComponent impleme
 		// keeps small grid fluctuations from flipping the battery between charge and
 		// discharge. REMOTE ends up here as well - it keeps full control and holds the
 		// battery at zero instead of releasing it.
-		this.transmit(Math.abs(activePower) < this.tolerance ? 0 : activePower, activePower);
+		this.transmit(Math.abs(batterySetPoint) < this.tolerance ? 0 : batterySetPoint, batterySetPoint);
 	}
 
 	/**
@@ -291,18 +310,34 @@ public class KostalManagedEssImpl extends AbstractOpenemsModbusComponent impleme
 	 * @return true while a hard zero is in place on either side
 	 */
 	private boolean hasHardLimit() {
-		if (Integer.valueOf(0).equals(this.getAllowedChargePower().get())
-				|| Integer.valueOf(0).equals(this.getAllowedDischargePower().get())) {
+		if (Integer.valueOf(0).equals(this.getAllowedChargePower().get())) {
 			return true;
 		}
-		// The device allowances are not the whole picture: a Controller can close a
-		// direction through the solver without them changing at all -
+		var pv = this.acPvProduction();
+		if (pv == null) {
+			// Without the PV share none of the AC figures below can be judged.
+			return false;
+		}
+		// The discharge bound is an AC bound and carries the PV, so it reaches zero only
+		// at night. What matters is whether anything is left for the BATTERY.
+		var allowedDischarge = this.getAllowedDischargePower().get();
+		if (allowedDischarge != null && allowedDischarge - pv <= 0) {
+			return true;
+		}
+		// The device allowances are not the whole picture either: a Controller can close
+		// a direction through the solver without them changing at all -
 		// Controller.Ess.LimitTotalDischarge expresses its SoC floor as
-		// SetActivePowerLessOrEquals. A solved 0 W is then ENFORCED, not idle, and
-		// releasing would let the inverter's internal regulation discharge anyway.
-		// So the effective solver range decides: a side pinned at zero is a hard limit.
-		return this.power.getMaxPower(this, ALL, ACTIVE) <= 0 //
-				|| this.power.getMinPower(this, ALL, ACTIVE) >= 0;
+		// SetActivePowerLessOrEquals. A solved zero is then ENFORCED, not idle, and
+		// releasing would let the inverter's internal regulation discharge anyway. The
+		// solver extrema are AC bounds as well, so they are compared against the PV
+		// share rather than against zero: with more PV than the battery may charge, the
+		// AC minimum is POSITIVE while charging is still perfectly possible, and testing
+		// it against zero would block every release on a sunny day.
+		//
+		// Compared directly instead of shifting by the PV share, because an unbounded
+		// solver reports +/-Integer.MAX_VALUE and subtracting from that overflows.
+		return this.power.getMaxPower(this, ALL, ACTIVE) <= pv //
+				|| this.power.getMinPower(this, ALL, ACTIVE) >= pv;
 	}
 
 	/**
@@ -335,13 +370,18 @@ public class KostalManagedEssImpl extends AbstractOpenemsModbusComponent impleme
 	 * is an explicit AUTO command that is undone immediately, while here it means
 	 * waiting out the inverter's control timeout.
 	 *
-	 * @param activePower   the solved Active-Power set-point
-	 * @param diffBalancing the value from {@link #calculateDiffBalancing}, may be null
+	 * @param activePower     the solved Active-Power set-point
+	 * @param batterySetPoint the same after subtracting the PV, i.e. what the battery
+	 *                        is asked to do
+	 * @param diffBalancing   the value from {@link #calculateDiffBalancing}, may be
+	 *                        null
 	 * @return the reason to release, or null to keep control
 	 */
-	private ReleaseReason releaseReason(int activePower, Integer diffBalancing) {
-		if (Math.abs(activePower) < this.tolerance && !this.hasHardLimit()) {
-			// nothing is being asked of the battery at all
+	private ReleaseReason releaseReason(int activePower, int batterySetPoint, Integer diffBalancing) {
+		if (Math.abs(batterySetPoint) < this.tolerance && !this.hasHardLimit()) {
+			// nothing is being asked of the battery at all. Measured on the BATTERY
+			// set-point, not on ActivePower - the latter carries the PV and is far from
+			// zero on a sunny day while the battery does nothing.
 			return ReleaseReason.IDLE_ZONE;
 		}
 		if (diffBalancing == null) {
@@ -365,7 +405,12 @@ public class KostalManagedEssImpl extends AbstractOpenemsModbusComponent impleme
 			// silently drop a genuine demand, e.g. the export the heat-pump Controller
 			// forces out of the battery. A charge cap that the inverter has been handed
 			// leaves the discharge side open, so minimum != maximum.
-			if (minPower < 0 && activePower == minPower
+			//
+			// "Negative" is tested on the BATTERY set-point, not on the AC minimum: the
+			// latter carries the PV, so it can be positive while the battery is charging.
+			// Under the equality below the two are the same quantity anyway, since
+			// batterySetPoint = activePower - pv.
+			if (batterySetPoint < 0 && activePower == minPower
 					&& minPower != this.power.getMaxPower(this, ALL, ACTIVE)) {
 				return ReleaseReason.AT_CHARGE_LIMIT;
 			}
@@ -406,8 +451,10 @@ public class KostalManagedEssImpl extends AbstractOpenemsModbusComponent impleme
 	 * the solved extrema describe what OpenEMS actually permits. Section 3.5
 	 * requires cyclic writes; if they stop, the inverter falls back to the values in
 	 * registers 1284/1286 after the time in 1288.
+	 *
+	 * @param pvProduction the PV share of the AC power, may be null
 	 */
-	private void applyBatteryLimitation() {
+	private void applyBatteryLimitation(Integer pvProduction) {
 		if (!this.batteryLimitation || !this.isManaged()) {
 			return;
 		}
@@ -431,8 +478,11 @@ public class KostalManagedEssImpl extends AbstractOpenemsModbusComponent impleme
 			// getMinPower is the most negative allowed Active-Power, i.e. the maximum
 			// charging OpenEMS permits. It is driven by "greater or equals" constraints,
 			// e.g. GridOptimizedCharge's DelayCharge - a genuine "do not charge more than
-			// this" that belongs in a limit register.
-			chargeLimit = Math.max(0, -this.power.getMinPower(this, ALL, ACTIVE));
+			// this" that belongs in a limit register. It bounds the inverter's AC power,
+			// so the PV has to come off it to get the battery's own limit.
+			chargeLimit = pvProduction == null //
+					? null //
+					: Math.max(0, pvProduction - this.power.getMinPower(this, ALL, ACTIVE));
 		}
 		if (chargeLimit == null || dischargeLimit == null) {
 			// device limits not read yet - write nothing rather than something wrong
@@ -529,7 +579,10 @@ public class KostalManagedEssImpl extends AbstractOpenemsModbusComponent impleme
 						new DummyRegisterElement(166, 169), //
 						m(KostalManagedEss.ChannelId.GRID_VOLTAGE_L3,
 								new FloatDoublewordElement(170).wordOrder(LSWMSW)),
-						new DummyRegisterElement(172, 173), //
+						// As a HybridEss the ActivePower is the AC power of the WHOLE inverter -
+						// PV and battery together - not the battery alone. Measured here rather
+						// than derived as PV plus battery, see the note on acPvProduction().
+						m(SymmetricEss.ChannelId.ACTIVE_POWER, new FloatDoublewordElement(172).wordOrder(LSWMSW)),
 						m(SymmetricEss.ChannelId.REACTIVE_POWER, new FloatDoublewordElement(174).wordOrder(LSWMSW)),
 						new DummyRegisterElement(176, 189), //
 						m(KostalManagedEss.ChannelId.BATTERY_CURRENT,
@@ -549,7 +602,7 @@ public class KostalManagedEssImpl extends AbstractOpenemsModbusComponent impleme
 				// Cycle (n = number of LOW tasks on the bridge), which puts dead time into the
 				// PID's feedback path and makes the surplus calculation lag its own effect.
 				new FC3ReadRegistersTask(582, Priority.HIGH,
-						m(SymmetricEss.ChannelId.ACTIVE_POWER, new SignedWordElement(582))),
+						m(HybridEss.ChannelId.DC_DISCHARGE_POWER, new SignedWordElement(582))),
 				new FC3ReadRegistersTask(1034, Priority.LOW,
 						m(KostalManagedEss.ChannelId.CHARGE_POWER, new FloatDoublewordElement(1034).wordOrder(LSWMSW)),
 						new DummyRegisterElement(1036, 1037), //
@@ -582,6 +635,8 @@ public class KostalManagedEssImpl extends AbstractOpenemsModbusComponent impleme
 				+ this.channel(KostalManagedEss.ChannelId.MAX_CHARGE_POWER).value().asStringWithoutUnit()
 				+ "|MaxDischargePower:"
 				+ this.channel(KostalManagedEss.ChannelId.MAX_DISCHARGE_POWER).value().asStringWithoutUnit()
+				+ "|Battery:" + this.getDcDischargePower().asStringWithoutUnit() //
+				+ "|Pv:" + this.acPvProduction() //
 				+ "|ChargePower:" + this.channel(KostalManagedEss.ChannelId.CHARGE_POWER).value().asString() //
 				+ "|Diff:" + this.channel(KostalManagedEss.ChannelId.DIFF_BALANCING).value().asStringWithoutUnit() //
 				+ this.debugLogBatteryLimitation();
@@ -653,10 +708,18 @@ public class KostalManagedEssImpl extends AbstractOpenemsModbusComponent impleme
 	 * Sets power limits based on system state and configuration.
 	 */
 	private void setLimits() {
+		// Both bounds constrain Active-Power, which as a HybridEss is the inverter's AC
+		// power. The battery's discharge capability therefore comes ON TOP of the PV
+		// that is already flowing. The charge side is deliberately NOT shifted, exactly
+		// as in GoodWe's AllowedChargeDischargeHandler: getSurplusPower() reads the
+		// battery's own charge limit back out of this channel, and shifting it here
+		// would count the PV twice.
+		var pv = this.acPvProduction();
+		int pvOrZero = pv == null ? 0 : pv;
 		int maxDischargePower = getMaxDischargePower().orElse(0);
 		int maxChargePower = getMaxChargePower().orElse(0) * -1;
 
-		setValue(this, ManagedSymmetricEss.ChannelId.ALLOWED_DISCHARGE_POWER, maxDischargePower);
+		setValue(this, ManagedSymmetricEss.ChannelId.ALLOWED_DISCHARGE_POWER, maxDischargePower + pvOrZero);
 		setValue(this, ManagedSymmetricEss.ChannelId.ALLOWED_CHARGE_POWER, maxChargePower);
 
 		var soc = getSoc().orElse(null);
@@ -665,7 +728,9 @@ public class KostalManagedEssImpl extends AbstractOpenemsModbusComponent impleme
 				setValue(this, ManagedSymmetricEss.ChannelId.ALLOWED_CHARGE_POWER, 0);
 			}
 			if (soc <= this.minsoc) {
-				setValue(this, ManagedSymmetricEss.ChannelId.ALLOWED_DISCHARGE_POWER, 0);
+				// The BATTERY must not discharge - the PV may still be exported, so the AC
+				// bound is the PV and not zero.
+				setValue(this, ManagedSymmetricEss.ChannelId.ALLOWED_DISCHARGE_POWER, pvOrZero);
 			}
 		}
 		log.debug("--> set limits: " + maxDischargePower + " / " + maxChargePower);
@@ -690,5 +755,58 @@ public class KostalManagedEssImpl extends AbstractOpenemsModbusComponent impleme
 				this.calculateAcDischargeEnergy.update(0);
 			}
 		}
+
+		// Calculate DC Energy. The AC pair above follows the inverter's total AC power -
+		// that is what makes the _sum consumption energy balance once the PV production
+		// has moved to the DC leg - while the battery's own throughput lives here.
+		var dcDischargePower = this.getDcDischargePowerChannel().getNextValue().get();
+		if (dcDischargePower == null) {
+			this.calculateDcChargeEnergy.update(null);
+			this.calculateDcDischargeEnergy.update(null);
+		} else if (dcDischargePower > 0) {
+			this.calculateDcChargeEnergy.update(0);
+			this.calculateDcDischargeEnergy.update(dcDischargePower);
+		} else {
+			this.calculateDcChargeEnergy.update(dcDischargePower * -1);
+			this.calculateDcDischargeEnergy.update(0);
+		}
+	}
+
+	/**
+	 * The PV share of the inverter's AC power, i.e. what the AC side would deliver
+	 * with the battery idle.
+	 *
+	 * <p>
+	 * Taken as Active-Power minus DC-Discharge-Power rather than from the DC
+	 * registers or from the chargers: it needs no further register, it works whether
+	 * or not chargers are configured, and it is already an AC figure - so subtracting
+	 * it from an AC set-point lands exactly on the battery instead of missing by the
+	 * conversion loss. Same expression GoodWe uses in its
+	 * AllowedChargeDischargeHandler.
+	 *
+	 * @return the PV share in [W], never negative, or null while a value is missing
+	 */
+	private Integer acPvProduction() {
+		var activePower = this.getActivePower().get();
+		var dcDischargePower = this.getDcDischargePower().get();
+		if (activePower == null || dcDischargePower == null) {
+			return null;
+		}
+		return Math.max(0, activePower - dcDischargePower);
+	}
+
+	@Override
+	public Integer getSurplusPower() {
+		var pv = this.acPvProduction();
+		if (pv == null || pv < 100) {
+			return null;
+		}
+		// AllowedChargePower is negative by convention and, see setLimits(), is the
+		// battery's own limit - so this sum is the PV the battery cannot absorb.
+		var surplus = pv + this.getAllowedChargePower().orElse(0);
+		if (surplus < 0) {
+			return null;
+		}
+		return surplus;
 	}
 }
