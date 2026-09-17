@@ -10,17 +10,16 @@ import java.time.temporal.ChronoUnit;
 import org.junit.jupiter.api.Test;
 
 import io.openems.common.test.TimeLeapClock;
-
 import io.openems.edge.bridge.modbus.test.DummyModbusBridge;
 import io.openems.edge.common.channel.IntegerWriteChannel;
-import io.openems.edge.common.test.AbstractComponentTest.TestCase;
 import io.openems.edge.common.sum.DummySum;
+import io.openems.edge.common.test.AbstractComponentTest.TestCase;
+import io.openems.edge.common.test.ComponentTest;
+import io.openems.edge.common.test.DummyComponentManager;
 import io.openems.edge.common.type.Phase.SingleOrAllPhase;
 import io.openems.edge.ess.api.ManagedSymmetricEss;
 import io.openems.edge.ess.power.api.Pwr;
 import io.openems.edge.ess.test.DummyPower;
-import io.openems.edge.common.test.ComponentTest;
-import io.openems.edge.common.test.DummyComponentManager;
 import io.openems.edge.kostal.plenticore.enums.ControlMode;
 
 public class KostalManagedEssImplTest {
