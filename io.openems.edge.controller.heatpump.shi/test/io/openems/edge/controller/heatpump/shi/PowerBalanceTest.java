@@ -71,23 +71,57 @@ public class PowerBalanceTest {
 	}
 
 	/**
-	 * A charging battery has already taken its share of the PV, so it must not show
-	 * up as surplus for the heat pump - while the same charging must not be read as
-	 * household demand either. This is the signed/clamped distinction: the surplus
-	 * uses the clamped discharge, the household load the signed battery power.
+	 * The surplus is production minus household, so it must not depend on what the
+	 * battery is doing. Every row is the same 5000 W of PV and 1000 W of household,
+	 * with the battery charging, idle or discharging; the surplus has to be 4000 W in
+	 * all of them, and the household deficit 0.
 	 *
-	 * @param chargePower the battery charge power in W (positive magnitude)
+	 * <p>
+	 * Counting only the discharge broke exactly this invariant, and the Controller
+	 * moves the battery itself: a charging battery shrank the surplus, the forced
+	 * export pushed it out of charging, the surplus was back, the Controller let go
+	 * and Balancing charged again - on 03.10. the two alternated every 15 s and the
+	 * slow inverter discharged the battery into the grid in between.
+	 *
+	 * @param batteryPower the battery power in W (negative = charging)
 	 */
 	@ParameterizedTest
-	@ValueSource(ints = { 500, 2000, 6000 })
-	public void aChargingBatteryIsNeitherSurplusNorHouseholdDemand(int chargePower) {
-		// 1000 W of export left while the battery charges: only the export is surplus.
-		var balance = PowerBalance.of(GRID_SIDE_OF_GRID_METER, -1000, -chargePower, -chargePower, 0);
+	@ValueSource(ints = { -3000, -1779, -500, 0, 500, 1779, 3000 })
+	public void theSurplusIsIndependentOfTheBatteryState(int batteryPower) {
+		// AC-coupled: the PV is outside the ESS, the ESS reports the battery alone.
+		var acCoupled = PowerBalance.of(GRID_SIDE_OF_GRID_METER, 1000 - 5000 - batteryPower, batteryPower,
+				batteryPower, 0);
+		assertEquals(4000, acCoupled.surplusPower());
+		assertEquals(0, acCoupled.householdDeficit());
 
-		assertEquals(1000, balance.surplusPower());
-		assertEquals(0, balance.batteryDischarge());
-		assertEquals(-chargePower, balance.batteryPower());
-		assertEquals(0, balance.householdDeficit());
+		// HybridEss: the PV flows through the inverter, so EssActivePower carries it.
+		var essActivePower = 5000 + batteryPower;
+		var hybrid = PowerBalance.of(GRID_SIDE_OF_GRID_METER, 1000 - essActivePower, essActivePower, batteryPower, 0);
+		assertEquals(4000, hybrid.surplusPower());
+		assertEquals(0, hybrid.householdDeficit());
+
+		// Behind the meter a running 1500 W heat pump is part of the grid reading.
+		var behindMeter = PowerBalance.of(BEHIND_GRID_METER, 1000 + 1500 - essActivePower, essActivePower,
+				batteryPower, 1500);
+		assertEquals(4000, behindMeter.surplusPower());
+		assertEquals(0, behindMeter.householdDeficit());
+	}
+
+	/**
+	 * A battery serving the household is not surplus: with no PV the surplus stays
+	 * 0, however much the battery discharges, and the household need is reported in
+	 * full.
+	 *
+	 * @param batteryPower the battery discharge power in W
+	 */
+	@ParameterizedTest
+	@ValueSource(ints = { 0, 1000, 2000 })
+	public void aDischargingBatteryIsNeverSurplus(int batteryPower) {
+		// 2000 W household, no PV, split between battery and grid.
+		var balance = PowerBalance.of(GRID_SIDE_OF_GRID_METER, 2000 - batteryPower, batteryPower, batteryPower, 0);
+
+		assertEquals(0, balance.surplusPower());
+		assertEquals(2000, balance.householdDeficit());
 	}
 
 	/**

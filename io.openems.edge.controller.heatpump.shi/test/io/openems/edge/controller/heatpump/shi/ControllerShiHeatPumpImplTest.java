@@ -909,6 +909,14 @@ class ControllerShiHeatPumpImplTest {
 						.build()) //
 				// No PV surplus, but a natural heat-pump run (2000 W) and free battery
 				// energy -> battery covers the full run via forced export; not elevated.
+				.next(new TestCase("Gap seen once: no battery forced yet") //
+						.input("_sum", Sum.ChannelId.GRID_ACTIVE_POWER, 0) //
+						.input("_sum", Sum.ChannelId.ESS_DISCHARGE_POWER, 0) //
+						.input("_sum", Sum.ChannelId.ESS_ACTIVE_POWER, 0) //
+						.input("_sum", Sum.ChannelId.ESS_SOC, 65) //
+						.input("_sum", Sum.ChannelId.ESS_CAPACITY, 10_000) //
+						.input("heatPump0", ElectricityMeter.ChannelId.ACTIVE_POWER, 2000) //
+						.output(ControllerShiHeatPump.ChannelId.ESS_FORCED_EXPORT_POWER, 0)) //
 				.next(new TestCase("Natural run without surplus: battery covers it") //
 						.input("_sum", Sum.ChannelId.GRID_ACTIVE_POWER, 0) //
 						.input("_sum", Sum.ChannelId.ESS_DISCHARGE_POWER, 0) //
@@ -1312,6 +1320,18 @@ class ControllerShiHeatPumpImplTest {
 							.setHeatPumpPosition(HeatPumpPosition.GRID_SIDE_OF_GRID_METER) //
 							.setMinimumSurplusPowerForElevatedMode(4000) //
 							.build()) //
+					.next(new TestCase("Gap seen once: no battery forced yet") //
+							.input("_sum", Sum.ChannelId.GRID_ACTIVE_POWER, -1200) //
+							.input("_sum", Sum.ChannelId.ESS_DISCHARGE_POWER, 0) //
+							.input("_sum", Sum.ChannelId.ESS_ACTIVE_POWER, essActivePower) //
+							.input("_sum", Sum.ChannelId.ESS_SOC, 65) //
+							.input("_sum", Sum.ChannelId.ESS_CAPACITY, 10_000) //
+							.input("heatPump0", ElectricityMeter.ChannelId.ACTIVE_POWER, 2500) //
+							.input("heatPump0", HeatShiHeatPump.ChannelId.OPERATING_MODE_STATUS, 1) //
+							.input("heatPump0", HeatShiHeatPump.ChannelId.HOT_WATER_STATUS, 3) //
+							.input("heatPump0", HeatShiHeatPump.ChannelId.HOT_WATER_MODE, 0) //
+							.input("heatPump0", HeatShiHeatPump.ChannelId.HOT_WATER_ACTIVE_SETPOINT, 480) //
+							.output(ControllerShiHeatPump.ChannelId.ESS_FORCED_EXPORT_POWER, 0)) //
 					.next(new TestCase("EssActivePower " + essActivePower + " W") //
 							.input("_sum", Sum.ChannelId.GRID_ACTIVE_POWER, -1200) //
 							// the battery is idle in BOTH readings - that is the figure the
@@ -1357,6 +1377,18 @@ class ControllerShiHeatPumpImplTest {
 				// 1000 W - not the 1700 W the heat pump could take. And since 800 + 1000
 				// < 2500, the run is NOT fully covered, so the run extension does not
 				// start (with the old 30 kW assumption it wrongly would, then draw grid).
+				.next(new TestCase("Gap seen once: no battery forced yet") //
+						.input("_sum", Sum.ChannelId.GRID_ACTIVE_POWER, -800) //
+						.input("_sum", Sum.ChannelId.ESS_DISCHARGE_POWER, 0) //
+						.input("_sum", Sum.ChannelId.ESS_ACTIVE_POWER, 0) //
+						.input("_sum", Sum.ChannelId.ESS_SOC, 65) //
+						.input("_sum", Sum.ChannelId.ESS_CAPACITY, 10_000) //
+						.input("heatPump0", ElectricityMeter.ChannelId.ACTIVE_POWER, 2500) //
+						.input("heatPump0", HeatShiHeatPump.ChannelId.OPERATING_MODE_STATUS, 1) //
+						.input("heatPump0", HeatShiHeatPump.ChannelId.HOT_WATER_STATUS, 3) //
+						.input("heatPump0", HeatShiHeatPump.ChannelId.HOT_WATER_MODE, 0) //
+						.input("heatPump0", HeatShiHeatPump.ChannelId.HOT_WATER_ACTIVE_SETPOINT, 480) //
+						.output(ControllerShiHeatPump.ChannelId.ESS_FORCED_EXPORT_POWER, 0)) //
 				.next(new TestCase("Weak battery: support capped, coverage not assumed") //
 						.input("_sum", Sum.ChannelId.GRID_ACTIVE_POWER, -800) //
 						.input("_sum", Sum.ChannelId.ESS_DISCHARGE_POWER, 0) //
@@ -1403,6 +1435,15 @@ class ControllerShiHeatPumpImplTest {
 				// The CONSTRAINT is asserted on purpose, not only the diagnostic channel:
 				// EssForcedExportPower is derived back from the request, so it reads 1160 W
 				// either way and is blind to an understated request.
+				.next(new TestCase("Gap seen once: no battery forced yet") //
+						.input("_sum", Sum.ChannelId.GRID_ACTIVE_POWER, -1440) //
+						.input("_sum", Sum.ChannelId.ESS_DISCHARGE_POWER, 0) //
+						.input("_sum", Sum.ChannelId.ESS_ACTIVE_POWER, 0) //
+						.input("_sum", Sum.ChannelId.ESS_SOC, 100) //
+						.input("_sum", Sum.ChannelId.ESS_CAPACITY, 10_000) //
+						.input("heatPump0", ElectricityMeter.ChannelId.ACTIVE_POWER, 2600) //
+						.input("heatPump0", HeatShiHeatPump.ChannelId.HEATING_STATUS, 3) //
+						.output(ControllerShiHeatPump.ChannelId.ESS_FORCED_EXPORT_POWER, 0)) //
 				.next(new TestCase("Partial surplus: battery forced to cover the remainder") //
 						.input("_sum", Sum.ChannelId.GRID_ACTIVE_POWER, -1440) //
 						.input("_sum", Sum.ChannelId.ESS_DISCHARGE_POWER, 0) //
@@ -1454,6 +1495,14 @@ class ControllerShiHeatPumpImplTest {
 				// The constraint bounds the ESS ACTIVE power, on a HybridEss the whole
 				// inverter: it has to rise from 2600 W to 3600 W so that 1000 W more leave
 				// the segment. The reported support stays the battery contribution, 1000 W.
+				.next(new TestCase("Gap seen once: no battery forced yet") //
+						.input("_sum", Sum.ChannelId.GRID_ACTIVE_POWER, -1600) //
+						.input("_sum", Sum.ChannelId.ESS_DISCHARGE_POWER, 0) //
+						.input("_sum", Sum.ChannelId.ESS_ACTIVE_POWER, 2600) //
+						.input("_sum", Sum.ChannelId.ESS_SOC, 65) //
+						.input("_sum", Sum.ChannelId.ESS_CAPACITY, 10_000) //
+						.input("heatPump0", ElectricityMeter.ChannelId.ACTIVE_POWER, 2600) //
+						.output(ControllerShiHeatPump.ChannelId.ESS_FORCED_EXPORT_POWER, 0)) //
 				.next(new TestCase("Hybrid ESS: PV-covered household does not shrink the battery budget") //
 						.input("_sum", Sum.ChannelId.GRID_ACTIVE_POWER, -1600) //
 						.input("_sum", Sum.ChannelId.ESS_DISCHARGE_POWER, 0) //
@@ -1495,6 +1544,18 @@ class ControllerShiHeatPumpImplTest {
 				// forced export is limited to the remaining 1 kW. With the household share
 				// ignored, the coverage check would wrongly assume 3 kW and start the
 				// extension, then draw the shortfall from the grid.
+				.next(new TestCase("Gap seen once: no battery forced yet") //
+						.input("_sum", Sum.ChannelId.GRID_ACTIVE_POWER, 0) //
+						.input("_sum", Sum.ChannelId.ESS_DISCHARGE_POWER, 2000) //
+						.input("_sum", Sum.ChannelId.ESS_ACTIVE_POWER, 2000) //
+						.input("_sum", Sum.ChannelId.ESS_SOC, 65) //
+						.input("_sum", Sum.ChannelId.ESS_CAPACITY, 10_000) //
+						.input("heatPump0", ElectricityMeter.ChannelId.ACTIVE_POWER, 2500) //
+						.input("heatPump0", HeatShiHeatPump.ChannelId.OPERATING_MODE_STATUS, 1) //
+						.input("heatPump0", HeatShiHeatPump.ChannelId.HOT_WATER_STATUS, 3) //
+						.input("heatPump0", HeatShiHeatPump.ChannelId.HOT_WATER_MODE, 0) //
+						.input("heatPump0", HeatShiHeatPump.ChannelId.HOT_WATER_ACTIVE_SETPOINT, 480) //
+						.output(ControllerShiHeatPump.ChannelId.ESS_FORCED_EXPORT_POWER, 0)) //
 				.next(new TestCase("Household needs 2 kW of a 3 kW battery: only 1 kW supports the heat pump") //
 						.input("_sum", Sum.ChannelId.GRID_ACTIVE_POWER, 0) //
 						.input("_sum", Sum.ChannelId.ESS_DISCHARGE_POWER, 2000) //
@@ -1599,6 +1660,18 @@ class ControllerShiHeatPumpImplTest {
 				// as free here, the coverage check starts the extension, and the shortfall
 				// goes to the grid as soon as the Balancing Controller claims the battery for
 				// the household.
+				.next(new TestCase("Gap seen once: no battery forced yet") //
+						.input("_sum", Sum.ChannelId.GRID_ACTIVE_POWER, 2000) //
+						.input("_sum", Sum.ChannelId.ESS_DISCHARGE_POWER, 0) //
+						.input("_sum", Sum.ChannelId.ESS_ACTIVE_POWER, 0) //
+						.input("_sum", Sum.ChannelId.ESS_SOC, 65) //
+						.input("_sum", Sum.ChannelId.ESS_CAPACITY, 10_000) //
+						.input("heatPump0", ElectricityMeter.ChannelId.ACTIVE_POWER, 2500) //
+						.input("heatPump0", HeatShiHeatPump.ChannelId.OPERATING_MODE_STATUS, 1) //
+						.input("heatPump0", HeatShiHeatPump.ChannelId.HOT_WATER_STATUS, 3) //
+						.input("heatPump0", HeatShiHeatPump.ChannelId.HOT_WATER_MODE, 0) //
+						.input("heatPump0", HeatShiHeatPump.ChannelId.HOT_WATER_ACTIVE_SETPOINT, 480) //
+						.output(ControllerShiHeatPump.ChannelId.ESS_FORCED_EXPORT_POWER, 0)) //
 				.next(new TestCase("Household on the grid: budget is reserved all the same") //
 						.input("_sum", Sum.ChannelId.GRID_ACTIVE_POWER, 2000) //
 						.input("_sum", Sum.ChannelId.ESS_DISCHARGE_POWER, 0) //
@@ -1613,6 +1686,100 @@ class ControllerShiHeatPumpImplTest {
 						.output(ControllerShiHeatPump.ChannelId.ELEVATED_MODE_ACTIVE, false) //
 						.output(ControllerShiHeatPump.ChannelId.RUN_EXTENSION_ACTIVE, false) //
 						.output(ControllerShiHeatPump.ChannelId.ESS_FORCED_EXPORT_POWER, 2000)) //
+				.deactivate();
+	}
+
+	/**
+	 * The operating point of 03.10., 10:30, on a HybridEss with the heat pump on the
+	 * grid side: 7500 W of PV, a 3450 W household (oven on), the heat pump draws
+	 * 3500 W. Production minus household leaves 4050 W, enough for the heat pump;
+	 * the battery may charge with what is left.
+	 *
+	 * <p>
+	 * The ESS request must be the same whether the battery currently charges or
+	 * discharges: household plus heat pump, 6950 W. Back then it was not. While the
+	 * battery charged the surplus shrank, the Controller forced the battery out of
+	 * charging; once it no longer charged, the Controller let go and Balancing told
+	 * it to charge again. The two alternated every 15 s, faster than the inverter
+	 * could follow, and in between it discharged the battery into the grid.
+	 *
+	 * <p>
+	 * The second part pins the outlier that started each round: grid meter and
+	 * inverter are read at slightly different times, so one cycle paired the
+	 * inverter's ramp-down already seen at the meter with the inverter's own stale
+	 * reading. That single snapshot must not force any battery power - only a gap
+	 * seen in two consecutive cycles does.
+	 *
+	 * @throws Exception on error
+	 */
+	@Test
+	void testGridSideRequestIsInvariantToTheBatteryStateAndIgnoresAStaleSnapshot() throws Exception {
+		var clock = createDummyClock();
+		var cm = new DummyComponentManager(clock);
+		var sum = new DummySum();
+		new ControllerTest(new ControllerShiHeatPumpImpl()) //
+				.addReference("cm", new DummyConfigurationAdmin()) //
+				.addReference("componentManager", cm) //
+				.addReference("sum", sum) //
+				.addReference("predictorManager", sunnyPredictor(cm, sum, Instant.now(clock))) //
+				.addReference("heatPump", new DummyHeatShiHeatPump("heatPump0")) //
+				.addComponent(new DummyManagedSymmetricEss("ess0") //
+						.setPower(new DummyPower(10_000))) //
+				.activate(MyConfig.create() //
+						.setId("ctrl0") //
+						.setHeatPumpId("heatPump0") //
+						.setEssId("ess0") //
+						.setHeatPumpPosition(HeatPumpPosition.GRID_SIDE_OF_GRID_METER) //
+						.setBatterySupportMode(BatterySupportMode.CLOUD_BUFFER) //
+						// this test is about the ESS request alone
+						.setMinimumSurplusPowerForElevatedMode(5000) //
+						.build()) //
+				// Balancing has the battery charging at its maximum: inverter 5721 W.
+				.next(new TestCase("Battery charging: the heat pump's share is exported anyway") //
+						.input("_sum", Sum.ChannelId.GRID_ACTIVE_POWER, -2271) //
+						.input("_sum", Sum.ChannelId.ESS_DISCHARGE_POWER, -1779) //
+						.input("_sum", Sum.ChannelId.ESS_ACTIVE_POWER, 5721) //
+						.input("_sum", Sum.ChannelId.ESS_SOC, 65) //
+						.input("_sum", Sum.ChannelId.ESS_CAPACITY, 10_000) //
+						.input("heatPump0", ElectricityMeter.ChannelId.ACTIVE_POWER, 3500) //
+						.output("ess0", ManagedSymmetricEss.ChannelId.SET_ACTIVE_POWER_GREATER_OR_EQUALS, 6950) //
+						.output(ControllerShiHeatPump.ChannelId.ESS_FORCED_EXPORT_POWER, 0)) //
+				// The battery has been pushed into discharging: inverter 7946 W.
+				.next(new TestCase("Battery discharging: the very same request") //
+						.input("_sum", Sum.ChannelId.GRID_ACTIVE_POWER, -4496) //
+						.input("_sum", Sum.ChannelId.ESS_DISCHARGE_POWER, 446) //
+						.input("_sum", Sum.ChannelId.ESS_ACTIVE_POWER, 7946) //
+						.output("ess0", ManagedSymmetricEss.ChannelId.SET_ACTIVE_POWER_GREATER_OR_EQUALS, 6950) //
+						.output(ControllerShiHeatPump.ChannelId.ESS_FORCED_EXPORT_POWER, 0)) //
+				// Settled: the battery charges with the 550 W the heat pump leaves.
+				.next(new TestCase("Settled: the battery keeps the rest") //
+						.input("_sum", Sum.ChannelId.GRID_ACTIVE_POWER, -3500) //
+						.input("_sum", Sum.ChannelId.ESS_DISCHARGE_POWER, -550) //
+						.input("_sum", Sum.ChannelId.ESS_ACTIVE_POWER, 6950) //
+						.output("ess0", ManagedSymmetricEss.ChannelId.SET_ACTIVE_POWER_GREATER_OR_EQUALS, 6950) //
+						.output(ControllerShiHeatPump.ChannelId.ESS_FORCED_EXPORT_POWER, 0)) //
+				// The meter already sees a 1900 W ramp-down the inverter has not reported
+				// yet. The snapshot shows a 1350 W gap that does not exist; asking the
+				// battery for it is what started each round on 03.10. The request may
+				// export all PV, but not a single watt of battery.
+				.next(new TestCase("Stale snapshot: no battery forced") //
+						.input("_sum", Sum.ChannelId.GRID_ACTIVE_POWER, -1600) //
+						.output("ess0", ManagedSymmetricEss.ChannelId.SET_ACTIVE_POWER_GREATER_OR_EQUALS, 7500) //
+						.output(ControllerShiHeatPump.ChannelId.ESS_FORCED_EXPORT_POWER, 0)) //
+				.next(new TestCase("Consistent again: back to the settled request") //
+						.input("_sum", Sum.ChannelId.GRID_ACTIVE_POWER, -3500) //
+						.output("ess0", ManagedSymmetricEss.ChannelId.SET_ACTIVE_POWER_GREATER_OR_EQUALS, 6950) //
+						.output(ControllerShiHeatPump.ChannelId.ESS_FORCED_EXPORT_POWER, 0)) //
+				// A real cloud: 2000 W of PV, battery idle, the household partly on the
+				// grid. The gap is real, so the battery covers it from the second cycle.
+				.next(new TestCase("Cloud, first cycle: not yet confirmed") //
+						.input("_sum", Sum.ChannelId.GRID_ACTIVE_POWER, 1450) //
+						.input("_sum", Sum.ChannelId.ESS_DISCHARGE_POWER, 0) //
+						.input("_sum", Sum.ChannelId.ESS_ACTIVE_POWER, 2000) //
+						.output(ControllerShiHeatPump.ChannelId.ESS_FORCED_EXPORT_POWER, 0)) //
+				.next(new TestCase("Cloud, second cycle: the battery covers the heat pump") //
+						.output("ess0", ManagedSymmetricEss.ChannelId.SET_ACTIVE_POWER_GREATER_OR_EQUALS, 6950) //
+						.output(ControllerShiHeatPump.ChannelId.ESS_FORCED_EXPORT_POWER, 3500)) //
 				.deactivate();
 	}
 
@@ -1831,6 +1998,14 @@ class ControllerShiHeatPumpImplTest {
 						.setMinSoc(15) //
 						.build()) //
 				// Free energy is computed from the Unmanaged predictions -> support works
+				.next(new TestCase("Gap seen once: no battery forced yet") //
+						.input("_sum", Sum.ChannelId.GRID_ACTIVE_POWER, 0) //
+						.input("_sum", Sum.ChannelId.ESS_DISCHARGE_POWER, 0) //
+						.input("_sum", Sum.ChannelId.ESS_ACTIVE_POWER, 0) //
+						.input("_sum", Sum.ChannelId.ESS_SOC, 65) //
+						.input("_sum", Sum.ChannelId.ESS_CAPACITY, 10_000) //
+						.input("heatPump0", ElectricityMeter.ChannelId.ACTIVE_POWER, 1000) //
+						.output(ControllerShiHeatPump.ChannelId.ESS_FORCED_EXPORT_POWER, 0)) //
 				.next(new TestCase("Support driven by Unmanaged-channel predictions") //
 						.input("_sum", Sum.ChannelId.GRID_ACTIVE_POWER, 0) //
 						.input("_sum", Sum.ChannelId.ESS_DISCHARGE_POWER, 0) //
@@ -1903,6 +2078,14 @@ class ControllerShiHeatPumpImplTest {
 						.build()) //
 				// The Unmanaged gap is filled from the total consumption forecast ->
 				// forecast counts as valid -> battery support is granted.
+				.next(new TestCase("Gap seen once: no battery forced yet") //
+						.input("_sum", Sum.ChannelId.GRID_ACTIVE_POWER, 0) //
+						.input("_sum", Sum.ChannelId.ESS_DISCHARGE_POWER, 0) //
+						.input("_sum", Sum.ChannelId.ESS_ACTIVE_POWER, 0) //
+						.input("_sum", Sum.ChannelId.ESS_SOC, 65) //
+						.input("_sum", Sum.ChannelId.ESS_CAPACITY, 10_000) //
+						.input("heatPump0", ElectricityMeter.ChannelId.ACTIVE_POWER, 1000) //
+						.output(ControllerShiHeatPump.ChannelId.ESS_FORCED_EXPORT_POWER, 0)) //
 				.next(new TestCase("Unmanaged gap filled from total consumption: support granted") //
 						.input("_sum", Sum.ChannelId.GRID_ACTIVE_POWER, 0) //
 						.input("_sum", Sum.ChannelId.ESS_DISCHARGE_POWER, 0) //
@@ -2870,6 +3053,18 @@ class ControllerShiHeatPumpImplTest {
 				// Natural 2000 W hot-water run, no PV. In CLOUD_BUFFER the battery is not
 				// invited to drive the extension (no surplus -> no extension), but the
 				// passive support still pays for the run the heat pump does anyway.
+				.next(new TestCase("Gap seen once: no battery forced yet") //
+						.input("_sum", Sum.ChannelId.GRID_ACTIVE_POWER, 0) //
+						.input("_sum", Sum.ChannelId.ESS_DISCHARGE_POWER, 0) //
+						.input("_sum", Sum.ChannelId.ESS_ACTIVE_POWER, 0) //
+						.input("_sum", Sum.ChannelId.ESS_SOC, 65) //
+						.input("_sum", Sum.ChannelId.ESS_CAPACITY, 10_000) //
+						.input("heatPump0", ElectricityMeter.ChannelId.ACTIVE_POWER, 2000) //
+						.input("heatPump0", HeatShiHeatPump.ChannelId.OPERATING_MODE_STATUS, 1) //
+						.input("heatPump0", HeatShiHeatPump.ChannelId.HOT_WATER_STATUS, 3) //
+						.input("heatPump0", HeatShiHeatPump.ChannelId.HOT_WATER_MODE, 0) //
+						.input("heatPump0", HeatShiHeatPump.ChannelId.HOT_WATER_ACTIVE_SETPOINT, 480) //
+						.output(ControllerShiHeatPump.ChannelId.ESS_FORCED_EXPORT_POWER, 0)) //
 				.next(new TestCase("Cloud-buffer: run funded, not extended") //
 						.input("_sum", Sum.ChannelId.GRID_ACTIVE_POWER, 0) //
 						.input("_sum", Sum.ChannelId.ESS_DISCHARGE_POWER, 0) //

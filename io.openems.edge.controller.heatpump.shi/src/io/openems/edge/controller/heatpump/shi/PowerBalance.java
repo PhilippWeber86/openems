@@ -13,11 +13,11 @@ package io.openems.edge.controller.heatpump.shi;
  *
  * <ul>
  * <li>{@link #batteryPower()} is SIGNED (negative while charging), while
- * {@link #batteryDischarge()} is clamped at 0. The surplus must use the clamped
- * one - a battery charging from PV has already taken its share, so it must not
- * appear as surplus available for the heat pump - whereas the household deficit
- * must use the signed one, because a charging battery raises the grid import
- * without the household needing anything.</li>
+ * {@link #batteryDischarge()} is clamped at 0. Surplus and household deficit both
+ * use the signed one, so neither depends on what the battery is doing right now:
+ * a charging battery neither shrinks the surplus nor counts as household demand,
+ * and a discharging one neither inflates the surplus nor hides household
+ * demand.</li>
  * <li>{@link #pvShare()} is the DC-PV share flowing through the inverter of a
  * HybridEss, i.e. the part of {@code EssActivePower} that is not battery. It is 0
  * on an AC-coupled system, where both {@code _sum} channels carry the same value.
@@ -31,9 +31,10 @@ package io.openems.edge.controller.heatpump.shi;
  * @param essAndGridPower  {@code EssActivePower + GridActivePower} in W: the flow
  *                         of the whole segment, which the forced export has to
  *                         overcome before anything reaches a grid-side heat pump
- * @param surplusPower     PV surplus available for the heat pump in W (>= 0),
- *                         after household and battery charging took their share
- *                         and without counting any battery discharge
+ * @param surplusPower     PV surplus available for the heat pump in W (>= 0):
+ *                         production minus household, as if the battery were
+ *                         idle. Invariant to whether the battery is currently
+ *                         charging, idle or discharging
  * @param householdDeficit household load in W (>= 0) that PV does NOT cover, so
  *                         it is served from grid or battery. Invariant to how it
  *                         is currently split between the two: it is what the
@@ -62,7 +63,18 @@ record PowerBalance(//
 	 * while {@code GRID_SIDE_OF_GRID_METER} sees neither - there the heat pump is
 	 * invisible at the grid meter and fed by whatever the segment exports.
 	 *
-	 * @param position         the {@link HeatPumpPosition}
+	 * <p>
+	 * The heat pump comes before battery charging: protecting the battery is the
+	 * job of the night reserve, which releases or withholds battery energy based on
+	 * the forecast. The surplus is therefore production minus household with the
+	 * battery taken out of the measurement in BOTH directions. Counting only the
+	 * discharge made the surplus depend on the battery's state, and the Controller
+	 * itself changes that state: while the battery charged, the surplus shrank and
+	 * the Controller forced the battery out of charging; once it no longer charged,
+	 * the surplus was back and the Controller let go, so Balancing told it to charge
+	 * again - the two alternated faster than a slow inverter could follow.
+	 *
+	 * @param position        the {@link HeatPumpPosition}
 	 * @param gridActivePower  grid power in W (import positive)
 	 * @param essActivePower   ESS active power in W; on a HybridEss the whole
 	 *                         inverter, PV included
@@ -75,8 +87,8 @@ record PowerBalance(//
 		var heatPump = Math.max(0, heatPumpPower);
 		var batteryDischarge = Math.max(0, batteryPower);
 		var surplusPower = switch (position) {
-		case BEHIND_GRID_METER -> Math.max(0, -gridActivePower - batteryDischarge + heatPump);
-		case GRID_SIDE_OF_GRID_METER -> Math.max(0, -gridActivePower - batteryDischarge);
+		case BEHIND_GRID_METER -> Math.max(0, -gridActivePower - batteryPower + heatPump);
+		case GRID_SIDE_OF_GRID_METER -> Math.max(0, -gridActivePower - batteryPower);
 		};
 		var householdDeficit = switch (position) {
 		case BEHIND_GRID_METER -> Math.max(0, gridActivePower + batteryPower - heatPump);

@@ -151,6 +151,8 @@ public class ControllerShiHeatPumpImpl extends AbstractOpenemsComponent
 	// after it, so the extension cannot restart immediately after being released.
 	private Instant runExtensionEndedAt = Instant.MIN;
 	private Integer naturalHotWaterSetpoint = null;
+	// Uncovered heat-pump power of the previous cycle (grid side), see applyEssSupport
+	private int previousSupportGap = 0;
 
 	public ControllerShiHeatPumpImpl() {
 		super(//
@@ -244,6 +246,7 @@ public class ControllerShiHeatPumpImpl extends AbstractOpenemsComponent
 		this.uncoveredMillis = 0;
 		this.lastCoverageEvaluation = null;
 		this.runExtensionActive = false;
+		this.previousSupportGap = 0;
 	}
 
 	private void tryRelease(SetpointWrite write) {
@@ -759,10 +762,13 @@ public class ControllerShiHeatPumpImpl extends AbstractOpenemsComponent
 	 * battery for the household).
 	 *
 	 * <p>
-	 * GRID_SIDE_OF_GRID_METER: Balancing never sees the heat pump, so a minimum
-	 * ESS power FORCES the support power out through the grid meter. The export is
-	 * capped at the current heat-pump consumption that is not already covered by
-	 * PV export, so battery energy is not sold to the grid.
+	 * GRID_SIDE_OF_GRID_METER: Balancing never sees the heat pump and would charge
+	 * the battery with the PV the heat pump runs on, so while the heat pump draws
+	 * power a minimum ESS power FORCES its share out through the grid meter: the
+	 * part of the surplus it consumes, plus the support power for whatever the
+	 * surplus does not cover. The export never exceeds the current heat-pump
+	 * consumption, so the battery keeps everything the heat pump leaves and no
+	 * battery energy is sold to the grid.
 	 *
 	 * @param balance the {@link PowerBalance} of this cycle
 	 * @return the battery support power actually applied in W
@@ -799,28 +805,39 @@ public class ControllerShiHeatPumpImpl extends AbstractOpenemsComponent
 		}
 		case GRID_SIDE_OF_GRID_METER -> {
 			this._setEssDischargeLimit(null);
-			var forcedExportPower = Math.min(balance.maxSupportPower(),
-					Math.max(0, balance.heatPumpPower() - balance.surplusPower()));
-			if (forcedExportPower <= 0) {
+			var surplusShare = Math.min(balance.heatPumpPower(), balance.surplusPower());
+			// Battery power is only forced out for a gap seen in two consecutive cycles.
+			// Grid meter and inverter are read at slightly different times, so while the
+			// inverter changes its output one cycle can pair the new grid reading with
+			// the old inverter reading. That snapshot shows a gap which does not exist,
+			// and a slow inverter carries out a one-cycle request for many seconds -
+			// discharging the battery into the grid long after the request is gone. The
+			// minimum of the two cycles ignores such a single outlier, still follows a
+			// shrinking gap immediately, and delays a real one by a single cycle.
+			var supportGap = Math.max(0, balance.heatPumpPower() - balance.surplusPower());
+			var confirmedSupportGap = Math.min(supportGap, this.previousSupportGap);
+			this.previousSupportGap = supportGap;
+			var forcedExportPower = Math.min(balance.maxSupportPower(), confirmedSupportGap);
+			if (surplusShare + forcedExportPower <= 0) {
 				this._setEssForcedExportPower(0);
 				return 0;
 			}
 			ManagedSymmetricEss ess = this.componentManager.getComponent(this.config.ess_id());
 			// The export leaving the segment is what reaches the heat pump:
-			// export = rawSurplus + ess, where rawSurplus = -(ess + grid) - it may be
-			// NEGATIVE when the battery is covering the household. Full coverage means
-			// export >= surplusPower + forcedExportPower, hence
-			// ess >= forcedExportPower + surplusPower + (ess + grid).
+			// export = -(ess + grid) + ess, where -(ess + grid) may be NEGATIVE when the
+			// battery is covering the household. The heat pump's share is exported when
+			// export >= surplusShare + forcedExportPower, hence
+			// ess >= surplusShare + forcedExportPower + (ess + grid).
 			//
-			// The surplus term is load-bearing and must not be cancelled against
-			// (ess + grid): surplusPower is clamped at 0 while essAndGridPower is not, so
-			// the two only cancel while a PV surplus actually exists.
+			// The surplus share is load-bearing and must not be cancelled against
+			// (ess + grid): it is clamped at 0 while essAndGridPower is not, so the two
+			// only cancel while a PV surplus actually exists.
 			var requiredPower = ess.getPower().fitValueIntoMinMaxPower(this.id(), ess, ALL, ACTIVE,
-					forcedExportPower + balance.surplusPower() + balance.essAndGridPower());
+					surplusShare + forcedExportPower + balance.essAndGridPower());
 			ess.setActivePowerGreaterOrEquals(requiredPower);
 			// The request may be clamped down by the ESS; the battery power actually
-			// forced towards the heat pump is the export beyond the PV surplus share.
-			var actualSupport = Math.max(0, requiredPower - balance.surplusPower() - balance.essAndGridPower());
+			// forced towards the heat pump is the export beyond the surplus share.
+			var actualSupport = Math.max(0, requiredPower - surplusShare - balance.essAndGridPower());
 			this._setEssForcedExportPower(actualSupport);
 			return actualSupport;
 		}
